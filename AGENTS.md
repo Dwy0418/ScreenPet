@@ -23,8 +23,9 @@
 - **热键那套已经撤掉了**（全部走鼠标，见 README「④ 全部用鼠标」）：没有 `pet/hotkey.py`、
   没有 `hotkey.*` 配置项，冒烟测试也不再合成全局按键——所以那两条"注册了却收不到按键"的
   假失败彻底没有了，冒烟测试跟前台压着什么窗口（提权 / 全屏游戏）无关。
-  那些入口现在只在右键菜单里（`pet/window.py::_build_menu` + `pet/states.py::MENU_REACTIONS`），
-  加/删入口时两边的表要一起改。
+  那些入口现在只在右键菜单里（`pet/window.py::_build_menu`），加/删入口时菜单和
+  冒烟测试里的名字要一起改（哪一项演哪个动作见 `pet/states.py::REACTIONS` 与
+  `CLICK_ACTIONS`——后者是"左键点一下"的随机池）。
 - 控制台是 GBK，`print` 中文要经 `pet.make_console_safe()`；`*.cmd` 一律纯 ASCII。
 - **动作分两层**：整张图的仿射（`keys` / `motion` 的正弦抖）和**逐部件**的关节
   （`pet/states.py` 的 `rig_keys`：头绕脖子、手臂绕肩）。关节位置全在 `tools/make_pet.py`

@@ -185,7 +185,12 @@ class AnalysisWorker(QThread):
         return line
 
     def analyze_now(self) -> None:
-        """忽略"画面没变化"和冷却，立刻来一句（`Ctrl+Alt+S` 那个热键走的就是这条路）。"""
+        """忽略"画面没变化"和冷却，立刻看一眼、来一句（`_once` 这条强制通道）。
+
+        以前它是 `Ctrl+Alt+S` / 右键「马上吐槽一句（立刻看一眼）」那条路；那个入口撤了
+        （画面一变它本来就会说），所以现在没有界面在调它。**这条通道留着**：worker 循环里
+        `_once` 还管着"回放的一眼也照说"（见 `_frame_stale` 那一段的判断），删掉要连着改几处。
+        """
         self._once.set()
         self._wake.set()
 
@@ -294,7 +299,7 @@ class AnalysisWorker(QThread):
                 # 只维持状态——不吐槽、不吸收（把旧画面当"新看的一眼"重读纯属白花钱）、
                 # 不喂学习、不进分镜。窗口标题那条线索照旧是活的（每次现问 winfind），
                 # 所以"他换了支视频"这种事在托盘和聊天里它还是答得出来。
-                # force（Ctrl+Alt+S 手动"说一句"）例外：他是当面要一句，那就按最后一眼说。
+                # force（`_once` 那条强制通道）例外：当面要一句，那就按最后一眼说。
                 self._maybe_nudge(now, False, idle, hour)
                 elapsed = time.monotonic() - started
                 self._sleep(max(0.2, interval - elapsed))
