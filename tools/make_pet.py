@@ -1286,12 +1286,64 @@ def _is_skin(pixel) -> bool:
     return a > 150 and r > 170 and r - b > 26 and b > 140
 
 
-def _body_side_fill(body: Image.Image, strip: Sequence[float]) -> Image.Image:
+def _blur_rgba(image: Image.Image, radius: float) -> Image.Image:
+    """给 RGBA 做高斯模糊——**带预乘**，别让透明像素的黑渗进实体边缘。
+
+    直接 `image.filter(GaussianBlur)` 是分开糊颜色和 alpha 的：透明像素的颜色是 (0,0,0)，
+    它会被一起糊进实体边缘，补出来的那块边上就多一圈灰（脖子、抬起的手旁边都见过，
+    看着就是"撕开"的接缝）。所以先把颜色乘进 alpha 再糊、糊完再除回来——透明的像素
+    不参与（跟 `alpha_composite` 一个口径）。
+    """
+    if radius <= 0:
+        return image
+    alpha = image.getchannel("A")
+    blurred_alpha = alpha.filter(ImageFilter.GaussianBlur(float(radius)))
+    channels = [
+        ImageChops.multiply(image.getchannel(name), alpha).filter(
+            ImageFilter.GaussianBlur(float(radius))
+        )
+        for name in ("R", "G", "B")
+    ]
+    out = Image.merge("RGBA", channels + [blurred_alpha])
+    pixels = out.load()
+    alphas = blurred_alpha.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            a = alphas[x, y]
+            if a == 0:
+                continue
+            r, g, b, _ = pixels[x, y]
+            pixels[x, y] = (
+                min(255, int(round(r * 255.0 / a))),
+                min(255, int(round(g * 255.0 / a))),
+                min(255, int(round(b * 255.0 / a))),
+                a,
+            )
+    return out
+
+
+def _body_side_fill(
+    body: Image.Image,
+    source: Image.Image,
+    strip: Sequence[float],
+    hole: Image.Image,
+) -> Image.Image:
     """抬手之后露出来的躯干左边：拿**右边那一列**的颜色往左涂，外沿压暗一点。
 
     右边那一列可能是搭下巴的白手套或下巴的皮肤（它们就在这条缝的右边），所以取样要
     跳过手套和皮肤、接着往右找，找到衬衫 / 裤子那种有颜色的像素再涂——不然会补出
     一条白带子或者一块肉色（都真踩过）。找不到就接着用上一行的颜色往下涂。
+
+    补在哪儿由两个条件卡死，这样边上不会再糊出一道灰带：
+
+    * `hole`——**只补抬手挖出来的那个洞**。以前这里是照 `RIG_BODY_STRIP` 糊一个矩形，
+      连没被挖走的、本来就对的像素（袖子、裤子）也一起盖成了平涂色；手臂一放回去盖不住
+      边上，就是那道竖直的印子。
+    * `source` 的 alpha——**不越出人物轮廓**。洞的外沿本来就搭在轮廓边上，不卡这一下
+      就会把颜色涂到身子外的空白里（叠在深色桌面上就是一圈灰边）。
+
+    而贴着身子是**按 alpha 叠上去**（不是 `Image.composite`）：`composite` 只认掩膜、
+    不看补色块的 alpha，掩膜里凡是没涂到颜色的行都会被当成黑糊上去。
     """
     x0, y0, x1, y1 = (int(round(value)) for value in strip)
     filled = Image.new("RGBA", body.size, (0, 0, 0, 0))
@@ -1313,9 +1365,10 @@ def _body_side_fill(body: Image.Image, strip: Sequence[float]) -> Image.Image:
         for x in range(x0, x1):
             k = 0.84 + 0.16 * (x - x0) / max(1, x1 - x0)   # 外沿暗一点，像身子侧面的转折
             fp[x, y] = (int(color[0] * k), int(color[1] * k), int(color[2] * k), 255)
-    filled = filled.filter(ImageFilter.GaussianBlur(max(0.6, body.width * 0.0047)))
-    clip = _round_mask(body.size, (x0, y0, x1, y1), max(0.6, body.width * 0.0059))
-    return Image.composite(filled, body, clip)
+    filled = _blur_rgba(filled, max(0.6, body.width * 0.0047))
+    clip = ImageChops.multiply(hole, source.getchannel("A"))
+    filled.putalpha(ImageChops.multiply(filled.getchannel("A"), clip))
+    return Image.alpha_composite(body, filled)
 
 
 def _neck_fill(body: Image.Image, box: Sequence[float]) -> Image.Image:
@@ -1338,7 +1391,7 @@ def _neck_fill(body: Image.Image, box: Sequence[float]) -> Image.Image:
             fade = max(0.0, min(1.0, 1.0 - (top - y) / float(reach + 2)))
             if fade > 0:
                 pixels[x, y] = color + (int(round(fade * 240)),)
-    return out.filter(ImageFilter.GaussianBlur(max(0.4, body.width * 0.0023)))
+    return _blur_rgba(out, max(0.4, body.width * 0.0023))
 
 
 class Rig:
@@ -1365,9 +1418,16 @@ class Rig:
         )
         self.head = _cut_layer(base, self.head_mask)
         self.arm = _cut_layer(base, self.arm_mask)
+        #: 抬手挖出来的洞（比手臂层大一圈）：补色照它来，不会多补到没被动过的像素上
+        self.arm_hole = self.arm_mask.filter(
+            ImageFilter.MaxFilter(max(3, RIG_ERASE_MARGIN | 1))
+        )
         torso = _neck_fill(_erase(base, self.head_mask), _rig_box(base.size, RIG_NECK_FILL))
         self.torso = _body_side_fill(
-            _erase(torso, self.arm_mask), _rig_box(base.size, RIG_BODY_STRIP)
+            _erase(torso, self.arm_mask),
+            base,
+            _rig_box(base.size, RIG_BODY_STRIP),
+            self.arm_hole,
         )
 
     def head_matrix(self, head: Mapping[str, float]) -> Tuple[float, ...]:

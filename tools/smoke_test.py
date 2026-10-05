@@ -7,6 +7,7 @@ offscreen 模式下不会真的弹窗口，但截屏、OCR、热键（会合成�
 from __future__ import annotations
 
 import ctypes
+import io
 import json
 import math
 import os
@@ -14,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import time
+import tokenize
 import traceback
 from pathlib import Path
 
@@ -705,14 +707,14 @@ def main() -> int:
         assert not companion.worker._away.is_set(), "放回来了后台还在隐身"
         print("      隐身↔放回来 这条接线是通的（worker 跟着一起切）")
 
-        # 点一下挂件 = 聊 / 收：面板开着再点一下就收起来（挂件问 app，app 收面板）
+        # 输入框现在从右键菜单「打字跟我唠…」进（点一下挂件改成**随机演一个动作**了，
+        # 见下面 test_window 的点击测试）；收回去用面板自己的关闭。
         assert not companion.panel.isVisible()
-        assert callable(companion.window.chat_open), "挂件没接上「面板开没开」那个问句"
-        companion.toggle_chat()
-        assert companion.panel.isVisible(), "点一下没把输入框叫出来"
-        companion.toggle_chat()
-        assert not companion.panel.isVisible(), "再点一下没收起来（还占着屏幕）"
-        print("      点一下挂件：聊 ↔ 收 都通（面板开没开由 app 说了算）")
+        companion.open_chat()
+        assert companion.panel.isVisible(), "「打字跟我唠…」没把输入框叫出来"
+        companion.panel.close_panel()
+        assert not companion.panel.isVisible(), "输入框关不掉（还占着屏幕）"
+        print("      打字输入框：从菜单叫得出来、也收得回去")
 
         # 「设计我的形象…」这条菜单：开出来 → 改一下**当场**换装 → 存进配置 → 关掉不留尾巴
         companion.open_designer()
@@ -893,39 +895,20 @@ def main() -> int:
         assert window._pose == "think", window._pose
         window.set_thinking(False)
         assert window._pose == "", window._pose
-        window.react("click")
-        assert window._act == "greet", window._act             # 单击 = 打招呼
-        assert window._act_state(time.monotonic())[0] == "greet"
+        window.react("wave")
+        assert window._act == "wave", window._act              # 举手挥一挥
+        assert window._act_state(time.monotonic())[0] == "wave"
         window.react("double")
         assert window._act == "poke", window._act              # 双击 = 被戳
         window.react("这个互动不存在")                          # 认不出来就什么都不做
         window.set_pose("这个状态不存在")
         assert window._pose == "" and window._act == "poke", (window._pose, window._act)
 
-        # 「逗它一下」：右键菜单里那排按钮（见 states.MENU_REACTIONS）必须**项项都有落点**——
-        # 菜单上的字 → 信号 → 挂件把它演出来。这套动作以前做完了却没入口（菜单里没处点、
-        # 情绪也带不出来），界面上永远看不到，等于白做；现在挨个点一遍，少接一个就报出来。
+        # 右键菜单先建出来（下面几处都要用它）。分组标题是挂在 QWidgetAction 上的 QLabel
+        # （菜单一挂样式表，addSection 的标题就画不出字了，见 window._add_section），
+        # 所以标题得从 defaultWidget 里问。
         menu = window._build_menu()
-        labels = [action.text() for action in menu.actions()]
-        # 分组标题是挂在 QWidgetAction 上的 QLabel（菜单一挂样式表，addSection 的标题
-        # 就画不出字了，见 window._add_section），所以标题得从 defaultWidget 里问。
-        titles = [
-            action.defaultWidget().text()
-            for action in menu.actions()
-            if isinstance(action, QWidgetAction) and action.defaultWidget() is not None
-        ]
-        assert "逗它一下" in titles, f"右键菜单里没「逗它一下」那一节：{titles}"
-        got = []
-        window.reactionRequested.connect(got.append)
-        for label, key in states.MENU_REACTIONS:
-            assert label in labels, f"菜单里没有「{label}」"
-            assert states.for_reaction(key) is not None, f"「{label}」指的 {key} 不是认得的动作"
-            next(action for action in menu.actions() if action.text() == label).trigger()
-            assert got[-1:] == [key], f"点「{label}」该报 {key}，实际 {got}"
-            window._act, window._act_until = "", 0.0        # 让上一个动作算播完
-            window.react(key)
-            assert window._act == states.REACTIONS[key], (label, window._act)
-        # 鼠标那两下新入口：停在它身上 → 挥手；拖起来放下 → 蹦一下
+        # 悬停 / 放下这两下（鼠标自己发的）：停在它身上 → 挥手；拖起来放下 → 蹦一下
         window._act, window._act_until = "", 0.0
         window._hover_cool = 0.0
         window._on_hover_still()
@@ -936,7 +919,7 @@ def main() -> int:
         window._hover_cool = 0.0
         window._on_drop()
         assert window._act == "jump", window._act               # 放下 = 落地蹦一下
-        print(f"      「逗它一下」{len(states.MENU_REACTIONS)} 项都能落到动作上 + 悬停挥手 / 放下蹦一下")
+        print(f"      悬停挥手 / 放下蹦一下；左键随机池 {len(states.CLICK_ACTIONS)} 项")
 
         # 抓到的画面是什么情绪，就顺手带个动作（见 states.MOOD_ACTIONS / PetWindow.play_mood）
         window._act, window._act_until = "", 0.0               # 先让上一个动作算播完
@@ -970,10 +953,12 @@ def main() -> int:
             window_mod.QMenu = real_menu
         labels = [text for text, _ in _MenuProbe.seen]
         assert labels, "右键菜单一项都没有"
-        chat = [text for text, checkable in _MenuProbe.seen if "主动搭话" in text]
-        assert chat and all(
-            checkable for text, checkable in _MenuProbe.seen if "主动搭话" in text
-        ), f"主动搭话开关不在菜单里或是不可勾选：{chat}"
+        # 「主动搭话」那个勾选开关撤了：它默认就是开着的（config.ProactiveConfig.enabled），
+        # 不必让用户特地去设一下；所以菜单里既不该再有这一项，也不该有别的勾选项。
+        assert not any("主动搭话" in text for text in labels), f"「主动搭话」开关该撤了：{labels}"
+        assert not any(checkable for text, checkable in _MenuProbe.seen), (
+            f"菜单里还有勾选项（开关都该撤了）：{_MenuProbe.seen}"
+        )
         assert any("退出" in text for text in labels), "菜单里连退出都没有"
         # 观看范围只留一个入口：进去自己拖一块，或者双击选整块屏（以前是两个菜单项）
         region_items = [text for text in labels if "观看范围" in text]
@@ -994,10 +979,13 @@ def main() -> int:
         assert not any("好友陪伴" in text for text in labels), labels
         assert not any("测试" in text for text in labels), f"菜单里还留着测试项：{labels}"
         assert not any(len(text) > 28 for text in labels), f"菜单里还留着大段说明：{labels}"
-        # 热键撤了（全部走鼠标）：这三项都回到菜单里——少一项，那件事就没人点得到。
-        # （点一下挂件那条"聊 / 收"的路照旧，见下面的点击测试。）
-        for back in ("马上吐槽一句（立刻看一眼）", "打字跟我唠…", "说一句（语音）"):
+        # 热键撤了（全部走鼠标）：这两项都在菜单里——少一项，那件事就没人点得到。
+        # （「点一下挂件」那条路现在是**随机演一个动作**，不是弹输入框了，见下面的点击测试。）
+        for back in ("打字跟我唠…", "说一句（语音）", "把我钉在这儿"):
             assert any(back in text for text in labels), f"右键菜单里少了「{back}」：{labels}"
+        # 撤掉的三项别再溜回来：马上吐槽（删了）、主动搭话开关（改默认开）、逗它一下（改随机）
+        for gone in ("马上吐槽", "主动搭话", "逗它一下"):
+            assert not any(gone in text for text in labels), f"菜单里还留着「{gone}」：{labels}"
         # 「设计我的形象…」：长相现调现看（见 app.open_designer），入口就在右键菜单里
         assert any("设计我的形象" in text for text in labels), f"右键菜单里没有「设计我的形象…」：{labels}"
         # 托盘让出来的那两项，得在这儿（右键菜单）找得到——托盘只管"放出来 / 收回去"
@@ -1005,49 +993,62 @@ def main() -> int:
             assert any(moved in text for text in labels), f"右键菜单里少了「{moved}」：{labels}"
         # 「打开完整存档」是今天新加的：memory.json 会被裁剪，这份流水一条都不丢
         assert any("打开完整存档" in text for text in labels), f"右键菜单里少了「打开完整存档」：{labels}"
+        # 「陪你看」和「看哪儿」合成一节了（「马上吐槽一句」撤掉之后，前一节就只剩一个开关）
+        titles = [
+            action.defaultWidget().text()
+            for action in menu.actions()
+            if isinstance(action, QWidgetAction) and action.defaultWidget() is not None
+        ]
+        assert "陪你看" in titles, f"右键菜单里没「陪你看」那一节：{titles}"
+        assert "看哪儿" not in titles, f"「看哪儿」该并进「陪你看」了：{titles}"
+        assert "逗它一下" not in titles, f"「逗它一下」那一节该撤了：{titles}"
         print(
-            f"      右键菜单 {len(labels)} 项：观看范围只留一个入口，含主动搭话开关；"
-            "钉住 / 打字 / 语音 / 马上吐槽都回来了（热键撤了），无测试项 / 无长说明"
+            f"      右键菜单 {len(labels)} 项：「陪你看」和「看哪儿」并成一节，"
+            "无主动搭话开关 / 无马上吐槽 / 无逗它一下"
         )
 
-        # 点一下挂件 = 想跟它说话：气泡先问一句 + 请求打开输入框
-        said = []
-        window.chatRequested.connect(lambda: said.append(True))
-        _send_mouse(window, QEvent.Type.MouseButtonPress, QPoint(12, 12))
-        _send_mouse(window, QEvent.Type.MouseButtonRelease, QPoint(12, 12))
-        assert window._click_timer.isActive(), "点一下该等一个双击间隔，再决定说不说话"
-        window._click_timer.stop()
-        window._on_click()
-        assert window._bubble._text == window_mod.CHAT_HI, window._bubble._text
-        assert "想跟我聊些什么" in window._bubble._text, window._bubble._text
-        assert said == [True], said
-        # 拖它换位置不算"点了一下"：不说话、也不弹面板
+        # 点一下挂件 = **随机演一个动作**：池子里的每个键都得是认得的动作，
+        # 连着点不许重样，而且点它**不再冒「想跟我聊些什么」、也不弹输入框**。
+        for key in states.CLICK_ACTIONS:
+            assert states.for_reaction(key) is not None, f"随机池里的 {key} 不是认得的动作"
+        window._last_click_act = ""
+        picked = []
+        for _ in range(40):
+            window._act, window._act_until = "", 0.0        # 让上一个动作算播完
+            window._on_click()
+            key = window._last_click_act
+            assert key, "点一下没挑出动作来"
+            assert window._act == states.REACTIONS[key], (key, window._act)
+            assert not picked or picked[-1] != key, f"连着两次都是 {key}"
+            picked.append(key)
+        assert len(set(picked)) >= 2, f"点来点去都是同一个动作：{set(picked)}"
         window._bubble.hide_bubble()
-        said.clear()
+        # 拖它换位置不算"点了一下"：不演随机动作（放下那一下照旧是「蹦一下」）
+        window._act, window._act_until = "", 0.0
+        before = window._last_click_act
         _send_mouse(window, QEvent.Type.MouseButtonPress, QPoint(12, 12))
         _send_mouse(window, QEvent.Type.MouseMove, QPoint(60, 60))
         _send_mouse(window, QEvent.Type.MouseButtonRelease, QPoint(60, 60))
         assert not window._click_timer.isActive(), "拖动被当成点了一下"
-        assert not said, said
-        # 双击（暂停 / 继续看）不许顺手把面板也点开
+        assert window._last_click_act == before, "拖动被当成点了一下（演了随机动作）"
+        assert window._act == "jump", window._act               # 放下 = 落地蹦一下
+        # 双击（暂停 / 继续看）不许顺手再演一遍"点一下"的随机动作
         paused = []
         window.pauseToggled.connect(lambda value: paused.append(value))
+        window._act, window._act_until = "", 0.0
+        before = window._last_click_act
         _send_mouse(window, QEvent.Type.MouseButtonPress, QPoint(12, 12))
         _send_mouse(window, QEvent.Type.MouseButtonRelease, QPoint(12, 12))
         _send_mouse(window, QEvent.Type.MouseButtonDblClick, QPoint(12, 12))
         _send_mouse(window, QEvent.Type.MouseButtonRelease, QPoint(12, 12))
         assert paused == [not window.paused], paused
-        assert not window._click_timer.isActive(), "双击那一下又去开面板了"
-        # 再点一下（面板已经开着）= 收起来：**慢两下**是"聊完收工"，快两下才是双击（暂停）。
-        # 收的时候不吭声——他是要把框收走，不是要再聊一句。
-        window.chat_open = lambda: True          # 假装面板正开着
-        window._bubble._text = ""
-        said.clear()
-        window._on_click()
-        assert said == [True], said              # 照样发信号，收还是聊由 app 决定
-        assert window._bubble._text == "", "要收起来的时候还说「想跟我聊些什么」"
-        window.chat_open = None
-        print("      点一下挂件：先问「想跟我聊些什么~」再弹出输入框；拖动 / 双击各归各")
+        assert window._act == "poke", window._act               # 双击那一下是「被戳」
+        assert not window._click_timer.isActive(), "双击那一下又去演「点一下」的动作了"
+        assert window._last_click_act == before, "双击被当成点了一下"
+        print(
+            f"      点一下挂件：随机演一个动作（{len(states.CLICK_ACTIONS)} 个里挑，不连着重样）；"
+            "拖动 / 双击各归各"
+        )
 
         # 气泡里不再画情绪小标签（「好奇」那种胶囊）：情绪只驱动边框配色和表情。
         # 结构上的证据：有没有情绪，气泡的高度都一样（不给标签留位置），常量也没了。
@@ -2572,8 +2573,12 @@ def main() -> int:
         # ---- 日常状态 / 界面互动（见 pet/states.py）：18 条状态 + 三张映射表 ----
         from pet import states as states_mod
         assert len(states_mod.POSES) == 18, [p.key for p in states_mod.POSES]
-        assert states_mod.for_reaction("click") is not None
-        assert states_mod.for_reaction("click").key == "greet", states_mod.REACTIONS
+        # 左键那一下不再固定演某一个：走 `CLICK_ACTIONS` 那张随机池，
+        # 池子里每个键都必须是认得的动作（点了没反应就是白做）。
+        assert states_mod.CLICK_ACTIONS, "左键随机池是空的"
+        for key in states_mod.CLICK_ACTIONS:
+            assert states_mod.for_reaction(key) is not None, key
+        assert "click" not in states_mod.REACTIONS, "「click」这个键该撤了（左键走随机池）"
         assert states_mod.for_reaction("double").key == "poke", states_mod.REACTIONS
         assert states_mod.for_reaction("这个互动不存在") is None
         assert states_mod.for_state("paused").key == "sleep", states_mod.STATES
@@ -4291,6 +4296,20 @@ def main() -> int:
         root = Path(__file__).resolve().parent.parent / "pet"
         app_src = (root / "app.py").read_text(encoding="utf-8")
         window_src = (root / "window.py").read_text(encoding="utf-8")
+
+        def code_only(src: str) -> str:
+            """把注释剔掉再查——静态检查只认**真写在代码里的字**。
+
+            菜单上不再有「逗它一下」这些项了，但 window.py 的注释里会写明"这一节撤了、
+            改成什么了"；那是说明，不是入口。不剔注释，盯的就成了注释本身。
+            """
+            return " ".join(
+                tok.string
+                for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+                if tok.type != tokenize.COMMENT
+            )
+
+        window_code = code_only(window_src)
         tray = app_src.split("def _setup_tray", 1)[1].split("def ", 1)[0]
         assert tray.count("menu.addAction") == 1, tray
         assert '"显示挂件"' in tray, tray
@@ -4304,16 +4323,26 @@ def main() -> int:
             assert f"w.{sig}.connect(" in app_src, sig
         # 热键撤了（全部走鼠标）之后：这几项必须都在右键菜单里，而且信号真接上了
         # ——少一处，那一项就是死的（点了没反应）。
-        for restored in ("马上吐槽一句（立刻看一眼）", "打字跟我唠…", "说一句（语音）", "把我钉在这儿"):
+        for restored in ("打字跟我唠…", "说一句（语音）", "把我钉在这儿"):
             assert restored in window_src, f"右键菜单里又少了「{restored}」"
-        for sig in ("analyzeRequested", "chatOpenRequested", "voiceRequested", "lockRequested"):
+        for sig in ("chatOpenRequested", "voiceRequested", "lockRequested"):
             assert f"{sig} = Signal(" in window_src, sig
             assert f"w.{sig}.connect(" in app_src, sig
+        # 撤掉的三个入口：马上吐槽（删了）/ 主动搭话那个勾选开关（改成默认开）/
+        # 逗它一下那一节（改成左键随机演）——连同它们的信号一起，别再溜回来。
+        # 查的是**剔掉注释之后**的源码：注释里会写"这一节撤了"，那是说明不是入口。
+        for gone in ("马上吐槽一句", "主动搭话", "逗它一下"):
+            assert gone not in window_code, f"右键菜单里还留着「{gone}」"
+        for sig in ("analyzeRequested", "proactiveToggled", "reactionRequested", "chatRequested"):
+            assert f"{sig} = Signal(" not in window_src, f"{sig} 这个信号该撤了"
         assert "hotkey" not in app_src, "热键那套又回来了（说好全部走鼠标）"
         assert not (Path(__file__).resolve().parent.parent / "pet" / "hotkey.py").exists(), (
             "pet/hotkey.py 还在（热键撤了就该一起删掉）"
         )
-        print("      托盘只剩「显示挂件」；马上吐槽 / 打字 / 语音 / 锁定都在右键菜单里，热键那套已撤")
+        print(
+            "      托盘只剩「显示挂件」；打字 / 语音 / 锁定在右键菜单里，"
+            "马上吐槽 / 主动搭话开关 / 逗它一下已撤"
+        )
 
 
     check("抱抱本地兜底台词（给诉苦那条路用）", test_hug_local_pool)

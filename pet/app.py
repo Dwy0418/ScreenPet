@@ -97,7 +97,6 @@ class ScreenPet:
         self.worker.show_requested.connect(self._on_show_requested)
 
         w.pauseToggled.connect(self.set_paused)
-        w.proactiveToggled.connect(self.set_proactive)
         w.pickRegionRequested.connect(lambda: self.pick_region())
         w.configRequested.connect(self.open_config)
         w.quitRequested.connect(self.quit)
@@ -107,16 +106,10 @@ class ScreenPet:
         w.memoryArchiveRequested.connect(self.open_memory_archive)  # 「打开完整存档」
         w.clearMemoryRequested.connect(self.clear_memory)  # 「清除长期记忆…」
         w.moved.connect(self._update_occluder)
-        # 点一下挂件：没在聊就弹输入框，**已经在聊就收起来**（见 window._on_click）。
-        # 面板开没开由面板自己说了算，挂件回头问它（快了是双击=暂停，走另一条路）。
-        w.chat_open = self.panel.isVisible
-        w.chatRequested.connect(self.toggle_chat)
-        # 右键菜单「逗它一下」：给人点的动作入口（键见 pet/states.py 的 MENU_REACTIONS）
-        w.reactionRequested.connect(self.play_reaction)
-        # 热键整套撤了（全部走鼠标），这几项只从右键菜单进来：打字 / 语音 / 马上吐槽 / 锁定
+        # 点一下挂件 = **随机演一个动作**（挂件自己挑、自己播，见 window._on_click）：
+        # 这条不用接线。想打字聊天走右键菜单「打字跟我唠…」，语音走「说一句（语音）」。
         w.chatOpenRequested.connect(self.open_chat)
         w.voiceRequested.connect(self.open_voice)
-        w.analyzeRequested.connect(self.analyze_now)
         w.lockRequested.connect(self._on_click_through)
         w.processLockRequested.connect(self.set_target_process)
         w.processUnlockRequested.connect(self.clear_target_process)
@@ -216,18 +209,6 @@ class ScreenPet:
             self.window.say("锁上了，鼠标碰到我还能右键", "smirk")
         self._sync_tray()
 
-    def play_reaction(self, name: str) -> None:
-        """右键菜单「逗它一下」：**给人点的**互动入口（键见 `pet/states.py` 的 MENU_REACTIONS）。
-
-        以前这些动作只有"情绪正好撞上来"才看得到（喂一口 / 夸夸它 / 摸鱼 / 伸懒腰 / 蹦一个…），
-        想让它演一次反倒碰不到；现在菜单里点一下就有。这是纯本机的——不联网、不进提示词、
-        也不打扰它正在看的东西，就是逗它一下。
-
-        认不出来的名字由挂件那边当没事发生（`window.react` 只认 REACTIONS 里的键），
-        所以这里不必再挑一遍；以后想让"逗它"顺手记一笔 / 回一句话，就加在这儿。
-        """
-        self.window.react(name)
-
     def toggle_lock(self) -> None:
         """锁定 / 解锁位置（菜单里的「把我钉在这儿 / 松开」最终也是走到这儿）。"""
         self._on_click_through(not self.window.locked)
@@ -249,25 +230,6 @@ class ScreenPet:
         if not self.window.isVisible():
             return state + "｜现在收在托盘里，正在补"
         return state
-
-    def set_proactive(self, enabled: bool) -> None:
-        """开/关主动搭话——没槽点时它也会自己找话说。"""
-        self.cfg.proactive.enabled = bool(enabled)
-        self.worker.proactive.reset()   # 计时器拨到现在，免得一打开就蹦一句
-        try:
-            self.cfg.save()
-        except Exception as exc:
-            print(f"[app] 保存配置失败：{exc}")
-        self._sync_tray()
-        if enabled:
-            self.window.say("行，那我不等槽点了，自己跟你搭话", "happy")
-        else:
-            self.window.say("好，我只在你画面有槽点的时候才说话", "speechless")
-
-    def analyze_now(self) -> None:
-        """立刻看一眼并吐槽一句（右键菜单「马上吐槽一句（立刻看一眼）」）。"""
-        self.window.set_thinking(True)
-        self.worker.analyze_now()
 
     def visit_now(self) -> None:
         """**本机**溜一圈（换块屏 / 屏幕对面待一会儿，不联网）。
@@ -366,19 +328,6 @@ class ScreenPet:
         self._update_occluder()
         if with_voice:
             self.start_listening()
-
-    def toggle_chat(self) -> None:
-        """点一下挂件：聊 / 收。
-
-        点第一下把输入框叫出来（挂件那边已经问过一句「想跟我聊些什么~」，见
-        `window._on_click`），**再点一下就收起来**——不用特地去找 Esc。
-        收的时候不吭声：他是要把框收走，不是要再聊一句。
-        """
-        if self.panel.isVisible():
-            self.panel.close_panel()
-            self._update_occluder()
-            return
-        self.open_chat()
 
     def open_voice(self) -> None:
         """「说一句（语音）」：开着输入框并直接开始听你说一句（面板上的「麦克风」同源）。"""

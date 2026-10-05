@@ -11,7 +11,7 @@ import math
 import os
 import random
 import time
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import (
@@ -57,9 +57,9 @@ VISIT_BACK_LINES = (
 )
 
 _TICK_MS = 33
-# 点一下挂件 = 想跟它说话（原来的「打字跟我唠…」「说一句（语音）」两个菜单项合成这一个动作，
-# 语音还是开着面板点「麦克风」，`Ctrl+Alt+T` / `Ctrl+Alt+V` 两个热键照旧）
-CHAT_HI = "想跟我聊些什么~"
+# 点一下挂件 = **随机演一个动作**（随机池见 `pet/states.py` 的 `CLICK_ACTIONS`，
+# 挑哪一个是 `_on_click` 说了算）。想打字聊天走右键菜单「打字跟我唠…」，
+# 语音还是开着面板点「麦克风」。
 CLICK_SLOP = 4          # 松开时移动不超过这么多像素，才算"点了一下"，不是拖它
 HOVER_STILL_MS = 900    # 鼠标在它身上停多久算"它注意到你了"（见 _on_hover_still）
 HOVER_REACT_COOL = 25.0 # 挥手别太勤：挥过一次之后歇这么久才可能再来（秒）
@@ -298,11 +298,9 @@ class PetWindow(QWidget):
 
     moved = Signal()
     pauseToggled = Signal(bool)
-    proactiveToggled = Signal(bool)
     pickRegionRequested = Signal()
     configRequested = Signal()
     quitRequested = Signal()
-    chatRequested = Signal()    # 点了一下我：先问「想跟我聊些什么~」，再打开输入框
     processLockRequested = Signal(str, str)   # 只盯某个程序：(exe 名, 标题关键字)
     processUnlockRequested = Signal()         # 不盯着它了，回到整屏 / 框选
     friendsRequested = Signal()               # 打开"好友系统"面板（见 app.open_friends）
@@ -311,10 +309,8 @@ class PetWindow(QWidget):
     designRequested = Signal()                 # 设计我的形象（见 app.open_designer / tools/design_pet.py）
     memoryArchiveRequested = Signal()         # 打开完整存档（只增不减的那本流水）
     clearMemoryRequested = Signal()           # 清空长期记忆（会先问一句）
-    reactionRequested = Signal(str)           # 「逗它一下」：给人点的动作入口（见 app.play_reaction）
     chatOpenRequested = Signal()              # 「打字跟我唠…」：弹出输入框（只开不收，见 app.open_chat）
     voiceRequested = Signal()                 # 「说一句（语音）」：弹出输入框并开始听（app.open_voice）
-    analyzeRequested = Signal()               # 「马上吐槽一句」：立刻看一眼画面说一句（app.analyze_now）
     lockRequested = Signal(bool)              # 「把我钉在这儿 / 松开」：鼠标穿透开关（app._on_click_through）
 
     def __init__(self, cfg, renderer: PetRenderer, parent: Optional[QWidget] = None):
@@ -331,7 +327,7 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setWindowTitle(self.cfg.persona.name)
         self.setToolTip(
-            "点一下跟我说话（再点一下收起）· 双击戳它一下 · 鼠标停在我身上我会跟你挥手 · "
+            "点一下看我演一个动作 · 双击戳它一下（暂停 / 继续） · 鼠标停在我身上我会跟你挥手 · "
             "左键拖动挪位置（放下我蹦一下）· 右键打开菜单"
         )
 
@@ -369,9 +365,9 @@ class PetWindow(QWidget):
         self._hover_timer.setInterval(HOVER_STILL_MS)
         self._hover_timer.timeout.connect(self._on_hover_still)
         self._hover_cool = 0.0          # 下次最早什么时候还能再挥（时间戳）
-        # 「点一下聊、再点一下收」：聊天面板开没开只有 app 知道，它把这个问句接过去
-        # （见 app._wire）。没人接（单测 / 单独用这个窗口）时就当"没在聊"——只有打开这一半。
-        self.chat_open: Optional[Callable[[], bool]] = None
+        # 点一下演哪个：从 `states.CLICK_ACTIONS` 里随机挑，但别连着两次都是同一个
+        # （见 _on_click / _pick_click_act）。
+        self._last_click_act = ""
         self._hidden_for_capture = False
         self._bubble_was_visible = False
         # 「把我钉在这儿（鼠标点不到我）」时也要能右键：鼠标压到身上就临时把穿透关掉，走开再打开
@@ -568,9 +564,9 @@ class PetWindow(QWidget):
     def react(self, event: str) -> None:
         """你在界面上跟它互动了一下：播一遍小动作就停。
 
-        名字走 `states.REACTIONS`——鼠标那几下（悬停 → 挥手、单击 → 打招呼、双击 → 被戳、
-        拖起来放下 → 蹦一下）是窗口自己发的；右键菜单「逗它一下」那几项由 `app.play_reaction`
-        送进来（键排见 `states.MENU_REACTIONS`）。认不出来就什么都不做。
+        名字走 `states.REACTIONS`——鼠标那几下（悬停 → 挥手、双击 → 被戳、拖起来放下 → 蹦一下）
+        是窗口自己发的；**单击**演哪个由 `_pick_click_act` 从 `states.CLICK_ACTIONS` 里随机挑。
+        认不出来就什么都不做。
         配了帧就按帧播，没配的照旧退回"蹦一下"（见 `sprite.act_lift`）——少放一套帧也不崩。
         """
         pose = states_mod.for_reaction(event)
@@ -886,21 +882,33 @@ class PetWindow(QWidget):
             self.pauseToggled.emit(not self._paused)
             event.accept()
 
-    def _on_click(self) -> None:
-        """点一下挂件：没在聊就「想跟我聊些什么~」+ 把输入框弹出来；**已经在聊就收起来**。
+    def _pick_click_act(self) -> str:
+        """点一下演哪个：从 `states.CLICK_ACTIONS` 里**随机**挑一个，别跟上一个重样。
 
-        慢两下（间隔超过系统双击间隔）就是"聊完收工"——不用特地去找 Esc：
-        第一下把框叫出来、第二下把它收回去；快两下仍然是双击（暂停 / 继续看），
-        走 `mouseDoubleClickEvent`，这里不会被叫到。
-
-        顺手摆一下手（`states.REACTIONS` 里的 click → 挥手）——**先有反应再开口**，
-        不然点了半天没动静，像点空了。
+        池子可能只有一个键（或者空），那就别绕圈了，直接给（空就给空串，谁都不演）。
         """
-        opening = not (callable(self.chat_open) and self.chat_open())
-        self.react("click")
-        if opening:
-            self.say(CHAT_HI, "curious")     # 要收起来的时候别再来一句"想跟我聊些什么"
-        self.chatRequested.emit()
+        pool = [key for key in states_mod.CLICK_ACTIONS if states_mod.for_reaction(key)]
+        if not pool:
+            return ""
+        if len(pool) > 1 and self._last_click_act in pool:
+            pool = [key for key in pool if key != self._last_click_act]
+        return random.choice(pool)
+
+    def _on_click(self) -> None:
+        """点一下挂件：**随机演一个动作**（池子见 `states.CLICK_ACTIONS`）。
+
+        慢两下（间隔超过系统双击间隔）才算"点了一下"——第一下先等一个双击间隔，
+        双击（暂停 / 继续看）来了就把这件事取消掉，走 `mouseDoubleClickEvent`，
+        这里不会被叫到；拖它换位置也不算点（见 `mouseReleaseEvent`）。
+
+        想打字聊天走右键菜单「打字跟我唠…」那一项——**点一下不再弹输入框**了：
+        点它一下本来就是要逗它，弹个框出来反而把动作盖住。
+        """
+        key = self._pick_click_act()
+        if not key:
+            return
+        self._last_click_act = key
+        self.react(key)
 
     # ---------- 右键菜单 ----------
 
@@ -969,20 +977,15 @@ class PetWindow(QWidget):
         menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         menu.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
-        # 「陪你看」：看 / 不听两个开关，写的都是点下去会发生的事
+        # 「陪你看」：**看什么 + 看哪儿合成一节**。以前这是「陪你看」「看哪儿」两节，
+        # 但上一节撤掉一项之后只剩一个开关了，跟"看哪儿"摆在一起更像一回事。
+        # 每一条写的都是点下去会发生的事。
         self._add_section(menu, "陪你看")
         menu.addAction("接着看" if self._paused else "先歇会儿（不看了）").triggered.connect(
             lambda *_: self.pauseToggled.emit(not self._paused)
         )
-        # 「马上吐槽一句」加回菜单了：以前它只剩 `Ctrl+Alt+S` 一个热键，热键一撤就成了死功能。
-        # 点这一下 = 立刻看一眼画面、说一句（见 app.analyze_now）。
-        menu.addAction("马上吐槽一句（立刻看一眼）").triggered.connect(
-            lambda *_: self.analyzeRequested.emit()
-        )
-
-        # 「看哪儿」：一个入口解决"整块屏"和"划一块"——点开自己划，双击就是整块屏
+        # 划观看范围：一个入口解决"整块屏"和"划一块"——点开自己划，双击就是整块屏
         # （程序锁定的那层还留着，写在下面 _add_target_menu 里）
-        self._add_section(menu, "看哪儿")
         menu.addAction(self._region_label()).triggered.connect(
             lambda *_: self.pickRegionRequested.emit()
         )
@@ -998,10 +1001,9 @@ class PetWindow(QWidget):
         menu.addAction("说一句（语音）").triggered.connect(
             lambda *_: self.voiceRequested.emit()
         )
-        chatty = menu.addAction("没事也来搭话（主动搭话）")
-        chatty.setCheckable(True)
-        chatty.setChecked(bool(self.cfg.proactive.enabled))
-        chatty.triggered.connect(lambda checked: self.proactiveToggled.emit(bool(checked)))
+        # 「没事也来搭话（主动搭话）」那个勾选开关撤了：主动搭话**默认就是开着的**
+        # （`config.ProactiveConfig.enabled` 默认 True），不必用户特地去设一下。
+        # 真不想要，配置里写 `proactive.enabled = false`（命令行 `--no-proactive` 同源）。
         # 「好友系统（串门 / 加好友）…」：出门只有一个入口——**去谁家串门**，
         # 所以面板里就是加好友 + 好友那一行的「去串门」。
         # （以前菜单里还有「去别的屏幕逛逛」，那是在自己屏幕上换个位置，两回事，已经不放了。）
@@ -1009,14 +1011,9 @@ class PetWindow(QWidget):
             lambda *_: self.friendsRequested.emit()
         )
 
-        # 「逗它一下」：这一节全是**给人点的互动入口**——`states.MENU_REACTIONS` 里那几个动作
-        # （喂一口 / 夸夸它 / 摸会儿鱼 / 伸个懒腰 / 蹦一个…）以前只能等情绪正好撞上来才看得到，
-        # 想让它演一次反倒碰不到；现在点这一下就有。菜单照着那张表搭、表在 states.py，
-        # 两边不会走岔；点下去纯粹是本机逗它（不联网、不进提示词，见 app.play_reaction）。
-        self._add_section(menu, "逗它一下")
-        for label, key in states_mod.MENU_REACTIONS:
-            action = menu.addAction(label)
-            action.triggered.connect(lambda *_, k=key: self.reactionRequested.emit(k))
+        # 动作入口（以前这里有一节「逗它一下」，一项项点）：现在**左键点一下挂件**就随机
+        # 演一个（池子见 `states.CLICK_ACTIONS`，见 `_on_click`），菜单里不再单列一节，
+        # 省得同一件事有两个入口、还得挑一个点。
 
         # 「我自己的事」
         # ①「把我钉在这儿」回到了菜单里：以前它只走 `Ctrl+Alt+L` 热键，热键一撤就没人点得到。
