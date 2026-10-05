@@ -1168,15 +1168,22 @@ python tools/build.py --clean   :: 清掉 build\ 和 dist\ 重来
 | | 源码里跑 | 打包成 exe 之后 |
 | --- | --- | --- |
 | 配置 / 记忆 / 语料 / 日志（**要写**） | 项目根目录（老位置，没变） | `%APPDATA%\ScreenPet\`（exe 装在 Program Files 里也写得进去） |
-| 形象帧 / 默认配置 / OCR 脚本（**只读**） | 项目根目录 | exe 解包目录（`sys._MEIPASS`，打包时由 `--add-data` 带进去） |
+| 形象帧 / 默认配置 / 开局常识 / OCR 脚本（**只读**） | 项目根目录 | exe 解包目录（`sys._MEIPASS`，打包时由 `--add-data` 带进去） |
 
 第一次启动时会照着 `config.example.json` 生成一份 `config.json`，并且冒一句气泡告诉你
 "右键我 → 打开配置文件"——不然用户根本不知道配置写到哪儿去了。
 想固定在一个地方跑（U 盘 / 便携版）：设环境变量 `PET_HOME` 就行。
 
+顺带还会**撒一份"开局常识"**（`pet/knowledge.py` + `knowledge.example.json`）：把上网补课
+学到的几条通用知识点和一份"这些话头学过了"的账本，第一次运行时写进用户自己的目录——新用户
+一装上就有这点底子，不必把同一个话题白学一遍。只撒一次（标记 `.knowledge-seed.json`，
+删掉它才会重撒），而且**只撒"谁都能听"的东西**：用户画像、爱好标签、屏幕上看来的台词/接话
+语料一律不带，怎么挑的写在 `tools/make_knowledge_seed.py` 里。
+
 | 相关文件 | 干什么 |
 | --- | --- |
 | `tools/build.py` | 打包本体：素材清单、图标、版本信息、`--zip`、同步安装脚本版本号 |
+| `tools/make_knowledge_seed.py` | 从本机学到的知识里挑出"干净的那几条"做成 `knowledge.example.json`（作者用，玩家不用） |
 | `build.cmd` | 给不爱敲命令的人：双击 → 装依赖 → 打包 |
 | `tools/make_icon.py` | 现画 `assets/app.ico`（形象是矢量画的，所以图标得渲染一遍再交给 Pillow） |
 | `installer/ScreenPet.iss` | Inno Setup 安装包（开始菜单 + 卸载项，可选；绿色版不需要） |

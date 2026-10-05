@@ -12,7 +12,7 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
-from . import dpi, paths, selftest, winfind
+from . import dpi, knowledge, paths, selftest, winfind
 from . import doing as doing_mod
 from . import friends as friends_mod
 from . import hide_console_window, make_console_safe
@@ -1035,6 +1035,12 @@ def main(argv=None) -> int:
             template = Config()
             template.apply_preset()
             template.save(cfg.config_path())
+
+    # 自带的那点常识（见 pet/knowledge.py）：上网补课学过的通用知识点 + 一份"这些话头学过
+    # 了"的账本，随包发一份，**第一次运行撒一次**（只对打包版；源码里跑的是作者自己）。
+    # 撒进去的都是"谁都能听"的东西：用户画像、爱好标签、屏幕上看来的台词一句都不带。
+    if not args.selftest:
+        knowledge.seed_user_data(cfg)
 
     if args.provider:
         apply_override(cfg, "provider", args.provider)

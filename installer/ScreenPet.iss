@@ -7,7 +7,7 @@
 ; 版本号由 tools/build.py 自动同步（打包时改写下面这行），别手改。
 
 #define MyAppName "screen-pet"
-#define MyAppVersion "0.8.0"
+#define MyAppVersion "0.8.1"
 #define MyAppExeName "ScreenPet.exe"
 #define MyDist "..\dist\ScreenPet"
 

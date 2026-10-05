@@ -463,6 +463,24 @@ def _usable_line(text: str, banned: Sequence[str] = ()) -> bool:
     return corpus.looks_like_speech(text, min_chars=2, max_chars=24, banned=banned)
 
 
+#: 话题账本的默认位置（相对配置文件所在目录）；想挪地方就改 `study.ledger`。
+DEFAULT_LEDGER = "data/study.json"
+
+
+def ledger_path_for(cfg) -> Path:
+    """话题账本该在哪儿（**纯算路径**，不建文件、不读文件）。
+
+    跟 `memory.archive_path_for` 一个规矩：配了 `study.ledger` 就按那个走，相对路径按
+    **配置文件所在目录**算——"配置在哪儿，账本就在哪儿"，便携版 / 测试把 `PET_HOME`
+    指到别处也不会写脏程序目录。撒开局常识（`pet/knowledge.py`）也走这一个入口。
+    """
+    raw = str(getattr(getattr(cfg, "study", None), "ledger", "") or DEFAULT_LEDGER)
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path(cfg.config_path()).parent / path
+    return path
+
+
 class TopicLedger:
     """话题账本：谁学过、学成没学成（`study.ledger`，默认 `data/study.json`）。
 
@@ -605,12 +623,8 @@ class WebStudy:
         self.last: Optional[Lesson] = None
 
     def _ledger_path(self, cfg) -> Path:
-        """账本放哪儿：跟 memory.json / taste.json 一个规矩（相对 config.json 所在目录）。"""
-        raw = str(getattr(self.mem, "ledger", "") or "data/study.json")
-        path = Path(raw)
-        if not path.is_absolute():
-            path = Path(cfg.config_path()).parent / path
-        return path
+        """账本放哪儿（规则见模块里的 `ledger_path_for`）。"""
+        return ledger_path_for(cfg)
 
     # ---------- 该不该学 ----------
 

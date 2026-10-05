@@ -34,7 +34,7 @@ from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, QPointF, QRect, 
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPixmap, QRegion  # noqa: E402
 from PySide6.QtWidgets import QApplication, QPushButton, QWidgetAction  # noqa: E402
 
-from pet import capture, care, corpus, dialog, doing, episode, foreground, friends, humanstyle, keyinfo, make_console_safe, memarchive, mood, net, paths, persona, play, proactive, progress, scene, states, taste, watchlog, webstudy, wincap, winfind, zh  # noqa: E402
+from pet import capture, care, corpus, dialog, doing, episode, foreground, friends, humanstyle, keyinfo, knowledge, make_console_safe, memarchive, mood, net, paths, persona, play, proactive, progress, scene, states, taste, watchlog, webstudy, wincap, winfind, zh  # noqa: E402
 from pet.asr import AsrError, SpeechReader  # noqa: E402
 from pet.chatpanel import ChatPanel  # noqa: E402
 from pet.config import ASSETS_DIR, Config, apply_override  # noqa: E402
@@ -49,6 +49,9 @@ from pet.sprite import IDENTITY, MOOD_STYLE, PetRenderer, _tap_matrix  # noqa: E
 from pet.vlm import VisionClient  # noqa: E402
 from pet.window import PetWindow  # noqa: E402
 from pet.worker import AnalysisWorker  # noqa: E402
+
+# 抽种子那个工具里的白名单（单一真源）：种子文件里的话头必须都在它里面
+from tools import make_knowledge_seed as seed_tool  # noqa: E402
 
 FAILURES = []
 tmpdir = ""
@@ -157,6 +160,88 @@ def main() -> int:
 
         # 「隐身时自己上网学」不再摆开关（右键菜单里那项已经撤了）：默认就得是开着
         assert Config().study.enabled is True, "隐身学习应该默认开着（不摆开关）"
+
+    def test_knowledge_seed():
+        """开局常识：随包发一份「干净知识」，第一次运行撒一次（见 pet/knowledge.py）。
+
+        这一条盯三件事：
+
+          ① 新用户头一次打开，知识点和话头**真的落进他自己的目录**，而且落进去的只有
+             "谁都能听"的东西——画像、爱好标签、陪看次数一个都不许有（用户自己的）；
+          ② **只撒一次**：标记一落，后面再启动不再撒（用户删除过的记忆不该又冒出来）；
+          ③ 人家已经有自己的记忆 / 账本时**一个字都不动**；源码里跑（没打包）根本不撒
+             ——那时候 user_dir() 就是项目根，撒了就是把运行期数据写进仓库。
+
+        种子文件本身也要公开在仓库里，所以顺手把"不许夹带私货"这条也钉住：它是给所有人
+        看的，不许出现书名号标题（那是某个页面的标题）、不许是提问、话头不许带平台名
+        （`抖音《奔跑吧》` 这种话题名等于把作者爱看什么写给所有人看）。
+        """
+        seed = knowledge.load_seed()
+        assert seed.get("lessons"), "种子文件里没有知识点"
+
+        for row in seed["lessons"]:
+            text = str(row.get("text") or "")
+            assert text and not text.endswith(("？", "?")), text
+            assert "《" not in text and "》" not in text, text
+            # 平台 / 站名也不许带：`抖音算法推荐个性化内容` 等于告诉所有人他用哪个 App
+            assert not any(word in text for word in seed_tool.PLATFORM_WORDS), text
+            assert row.get("tags"), text
+        for row in seed["topics"]:
+            name = str(row.get("topic") or "")
+            assert name in seed_tool.KEEP_TOPICS, f"{name} 不在白名单里，不该随包发出去"
+            assert "《" not in name and "抖音" not in name and "快手" not in name, name
+
+        old_home = os.environ.get("PET_HOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["PET_HOME"] = tmp      # 这一条跑在自己造的家目录里，别弄脏别的测试
+            try:
+                cfg = Config.load(Path(tmp) / "config.json")
+                assert knowledge.seed_user_data(cfg, force=True) is True
+
+                mem = json.loads((Path(tmp) / "memory.json").read_text(encoding="utf-8"))
+                assert len(mem["entries"]) == len(seed["lessons"]), mem["entries"]
+                assert {e["dialog"] for e in mem["entries"]} == {"learn"}, mem["entries"]
+                # 这几样**全是用户自己的**：开局必须是空的
+                assert mem["profile"] == "" and mem["tags"] == {} and mem["comment_count"] == 0, mem
+                assert mem["dialog"] == {"learn": len(seed["lessons"])}, mem["dialog"]
+                # 知识点的标签不是爱好档案：它只说明这条知识讲什么
+                assert all(e["tags"] for e in mem["entries"]), mem["entries"]
+
+                ledger = json.loads((Path(tmp) / "data" / "study.json").read_text(encoding="utf-8"))
+                assert set(ledger["topics"]) == {t["topic"] for t in seed["topics"]}, ledger
+                now = time.time()
+                for name, item in ledger["topics"].items():
+                    # ts 落成"刚学过"：冷却期内不会为同一个话头再花一次接口钱
+                    assert abs(now - item["ts"]) < 60, (name, item)
+
+                marker = Path(tmp) / knowledge.MARKER_NAME
+                assert marker.exists(), "撒完得落标记，不然每次启动都撒一遍"
+                # ② 再撒一次：被标记挡住
+                assert knowledge.seed_user_data(cfg, force=True) is False
+
+                # ③ 人家已经攒了自己的记忆 / 账本：一个字都不动（哪怕标记被删了）
+                own = {"version": 1, "profile": "他自己的画像", "profile_updated_at": 1.0,
+                       "comment_count": 7, "tags": {"直播": 3}, "dialog": {"analyze": 2},
+                       "entries": [{"ts": 1.0, "text": "他自己的一条记忆", "mood": "",
+                                    "tags": ["直播"], "scene": "", "dialog": "analyze"}]}
+                (Path(tmp) / "memory.json").write_text(json.dumps(own, ensure_ascii=False), encoding="utf-8")
+                (Path(tmp) / "data" / "study.json").write_text(
+                    json.dumps({"version": 1, "topics": {"自己的话头": {"ts": 1.0, "ok": 1, "blank": 0}}},
+                               ensure_ascii=False), encoding="utf-8")
+                marker.unlink()
+                knowledge.seed_user_data(cfg, force=True)
+                assert json.loads((Path(tmp) / "memory.json").read_text(encoding="utf-8")) == own, "碰了人家的记忆"
+                assert list(json.loads((Path(tmp) / "data" / "study.json").read_text(encoding="utf-8"))["topics"]) == ["自己的话头"]
+                # 标记照落：不能因为"这次没撒"就每次启动都来问一遍
+                assert marker.exists()
+            finally:
+                if old_home is None:
+                    os.environ.pop("PET_HOME", None)
+                else:
+                    os.environ["PET_HOME"] = old_home
+
+        # ④ 源码里跑（没打包）：一次都不撒
+        assert knowledge.seed_user_data(Config.load(Path(tempfile.mkdtemp()) / "config.json")) is False
 
     def test_cli_override():
         """命令行临时参数不能被写回配置文件。"""
@@ -4382,6 +4467,7 @@ def main() -> int:
     check("一律简体（繁→简零依赖）+ 「场景：」这种只剩标签的不进气泡", test_simplified_and_label_only)
     check("好友系统：串门整条路（名片/敲门/点头/唠嗑/告别/界面/设备离线）", test_friends)
     check("好友在干嘛 + 两只一起玩（尺度 / 打听 / 同步动作）", test_friend_doing_play)
+    check("开局常识：随包发的「干净知识」只撒一次，不碰人家自己的记忆", test_knowledge_seed)
     check("跨模块引用名核对（静态）", test_module_refs)
     check("托盘只留「显示挂件」（其余命令都在右键菜单里）", test_tray_minimal)
 

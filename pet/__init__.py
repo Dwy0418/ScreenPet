@@ -48,7 +48,7 @@ import time
 from pathlib import Path
 from typing import Optional, TextIO
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 
 def make_console_safe() -> None:

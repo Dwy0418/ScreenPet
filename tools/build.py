@@ -32,12 +32,13 @@ from pet import paths as pet_paths   # noqa: E402
 APP_NAME = "ScreenPet"
 ENTRY = "main.py"
 
-#: 要一起塞进 exe 的**素材**（只读的东西）：形象帧、默认配置、Windows OCR / 语音那两层脚本。
+#: 要一起塞进 exe 的**素材**（只读的东西）：形象帧、默认配置、开局常识、Windows OCR / 语音那两层脚本。
 #: 写的东西（config/memory/data）不进包，运行时落在 user_dir()，见 pet/paths.py。
 #: 注意只带 `assets/pet`：`assets/source` 是画形象用的素材（3.6MB），运行时用不到。
 BUNDLED = (
     ("assets/pet", "assets/pet"),
     ("config.example.json", "."),
+    ("knowledge.example.json", "."),
     ("pet/winocr.ps1", "pet"),
     ("pet/asr.ps1", "pet"),
 )
