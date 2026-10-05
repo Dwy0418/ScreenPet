@@ -1,0 +1,54 @@
+# 运行期生成的东西
+#
+# 【别在这份文件里写行内注释】：`xxx.json   # 说明` 这种写法 git 不认——
+# 整行（连着 # 和后面的字）都会被当成一个"文件名"，结果该忽略的照样被提交。
+# 这个坑真踩过：friends.json 里存着口令，因为行内注释失效被一起提交了。
+# 注释一律单独占一行，文件名后面干干净净。
+config.json
+memory.json
+taste.json
+episodes.json
+
+# 好友簿 + 我自己的名片（含口令，别提交）
+friends.json
+# 串门流水
+data/visits.json
+# 收下来的访客形象帧
+data/guests/
+# 边看边学攒的档案（台词池 + 接话对）
+data/learn.json
+# 隐身学习的话题账本（谁学过 / 学成没学成 / 读过哪几页）
+data/study.json
+# 语料（往往是自己的聊天记录，边看边学也会往里写）
+data/chat_style.json
+# 往语料里写之前的自动备份
+data/chat_style.json.bak
+# 完整存档（一条都不丢的那本流水，全是隐私）
+data/memory/
+
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+
+# 打包出来的东西（见 tools/build.py：这两样都能一条命令重新生成）
+build/
+dist/
+*.spec
+
+# 自检 / 预览 / 跑起来的临时产物
+selftest.log
+smoke.log
+preview.log
+snap*.png
+crop*.png
+preview*.png
+pip*.log
+pip*.out
+pip*.err
+run.out
+run.out.prev
+run.err
+.state
+state.txt
+info*.txt

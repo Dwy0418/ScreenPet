@@ -1,0 +1,8 @@
+{
+  // 弹窗「由于 Python 语言服务器设置为 None，因此禁用了 Pylance」的修法：
+  // python.languageServer 被改成了 "None"（等于把 Pylance 关掉），这里改回 "Default"。
+  // 这一项是「资源级」设置，工作区里写了就盖过用户级；两处都写成 Default 就不会再弹。
+  "python.languageServer": "Default",
+  // IntelliCode 激活失败是上面那个开关的连带反应，语言服务器起来它就好了。
+  "python.analysis.indexing": true
+}

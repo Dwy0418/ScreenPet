@@ -1,0 +1,73 @@
+name: build
+
+# 打一个 tag（比如 v0.8.0）就自动：装依赖 → 跑冒烟测试 → 打包 exe → 发 Release。
+# 别人在 Releases 页面直接下载 zip / 安装包就行，不用装 Python。
+# 也可以手动触发（Actions → build → Run workflow）。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 装依赖（含打包用的 PyInstaller）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 冒烟测试（每个模块真跑一遍）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/smoke_test.py
+
+      - name: 生成图标
+        run: python tools/make_icon.py
+
+      - name: 打包（onedir + zip）
+        run: python tools/build.py --zip
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenPet-windows
+          path: |
+            dist/*.zip
+            dist/ScreenPet/**
+
+      - name: 发 Release（只在打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          body: |
+            ## 怎么用
+
+            1. 下载下面的 `ScreenPet-*.zip`，解压到**任意**文件夹（放桌面也行）。
+            2. 双击 `ScreenPet.exe` —— 屏幕边上的宠物就出来了。
+            3. 第一次用：右键它 →「打开配置文件」，把 `provider` 改成 `zhipu`（或
+               你有的那家），填上 `api_key`，重启一下。配置文件在
+               `%APPDATA%\ScreenPet\config.json`。
+
+            没有 API Key 也能跑：默认是离线演示模式（`provider: mock`），
+            形象、动画、热键、托盘、打字聊天都能试，只是它说的话是内置样本。
+
+            ## 说明
+
+            - 配置 / 记忆 / 语料都写在 `%APPDATA%\ScreenPet\`，删掉 exe 不会丢。
+            - 热键：`Ctrl+Alt+P` 暂停 · `Ctrl+Alt+S` 马上吐槽 · `Ctrl+Alt+T` 打字聊天 ·
+              `Ctrl+Alt+V` 语音 · `Ctrl+Alt+R` 划观看范围 · `Ctrl+Alt+L` 锁定位置。
+            - 源码、怎么改、怎么自己打包：见仓库里的 `README.md` 与 `docs/`。

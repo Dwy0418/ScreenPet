@@ -1,0 +1,13 @@
+# -*- coding: utf-8 -*-
+# 只有"打包 exe"才需要的东西。玩家不用装这些——他们双击 exe 就行。
+#     pip install -r requirements-dev.txt
+#
+# 为什么顶上有那行 coding 声明：pip 读 requirements 文件时按**系统编码**（中文 Windows 是
+# GBK）解码，注释里的中文没有声明就会 UnicodeDecodeError —— 装依赖这一步直接失败。
+-r requirements.txt
+
+# 把挂件打成 Windows 软件（见 tools/build.py）
+PyInstaller>=6.0
+
+# 生成 assets/app.ico（exe 图标；形象是现画的，所以要在打包机上渲染一遍）
+Pillow>=10.0
