@@ -1137,7 +1137,7 @@ python tools\make_pet.py assets\source\pet_src.png
 | `pack-assets.cmd`（= `python tools/pack_assets.py`） | 把整套帧打成素材包：**下载**（`--url`，不给就跳过）→ **抠透明**（调 `make_pet` 重生成）→ **归类**（按 `states.py` / `play.py` / `mood.py` 核对帧数与建议时长）→ **压缩**（`dist\桌宠素材包-v<版本>.zip`，含 `清单.txt`）。`--no-cutout` 只打包现有的帧（留住手画的）/ `--list` 只核对 / `--no-restart` 不顺手重启挂件 |
 | `python tools/paste_face.py 自拍.jpg --install` | 把自拍贴到黄豆脸上：找黄色脑袋 → 裁圆脸 → 贴好再跑一次 make_pet 生成帧（`--preview 对比.png` 先看效果，`--face-box/--crop-ratio/--center/--zoom/--shift` 调位置） |
 | `set-key.cmd`（= `python tools/set_key.py`） | 填 API Key：选 provider → 粘 Key（不回显）→ 试连一次；`--check` 只测通不通，`--mock` 回离线，`--restart` 顺手重启挂件 |
-| `restart.cmd`（= `python tools/restart_pet.py`） | 停掉在跑的挂件、再用当前代码起一个：`--stop` 只关（跑冒烟测试前用它腾热键）/ `--start` 只起 / `--status` 看看跑没跑 |
+| `restart.cmd`（= `python tools/restart_pet.py`） | 停掉在跑的挂件、再用当前代码起一个：`--stop` 只关（跑冒烟测试前先用它把在跑的退掉）/ `--start` 只起 / `--status` 看看跑没跑 |
 | `python tools/render_preview.py preview.png` | 生成"6 种表情 + 吐槽气泡（不带情绪标签）"的对照预览图，换形象时用来对齐 |
 | `python tools/demo_run.py 9 snap.png` | 启动挂件 9 秒后自动截图并退出，用来确认位置和外观（同时留下 .log 看有没有报错） |
 | `python tools/demo_nudges.py` | 用假时钟把新功能跑一遍：主动夸 / 主动关心 / 安慰+抱抱 / 整集资料卡 / 内部信息闸（含"念屏幕"那条）/ keyinfo 只认一次 / **跟着你的进度看**，打成一张表（不联网、不弹窗） |

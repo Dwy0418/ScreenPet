@@ -2,7 +2,7 @@
 
     $env:QT_QPA_PLATFORM="offscreen"; python tools/smoke_test.py
 
-offscreen 模式下不会真的弹窗口，但截屏、OCR、热键（会合成一次按键）、模型调用都是真的。
+offscreen 模式下不会真的弹窗口，但截屏、OCR、模型调用都是真的（模型走 mock，不联网）。
 """
 from __future__ import annotations
 

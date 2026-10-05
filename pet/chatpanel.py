@@ -96,7 +96,7 @@ class ChatPanel(QWidget):
         row.addWidget(self.input, 1)
 
         self.mic = QPushButton("麦克风", self)
-        self.mic.setToolTip("点一下，我听着（也可以用热键）")
+        self.mic.setToolTip("点一下，我听着")
         self.mic.setFixedWidth(64)
         self.mic.clicked.connect(self._voice)
         row.addWidget(self.mic)

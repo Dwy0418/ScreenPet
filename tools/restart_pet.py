@@ -1,7 +1,7 @@
 """重启挂件：先停再起，改完代码让它生效的最短一步。
 
     python tools/restart_pet.py            # 先停掉在跑的挂件，再用新代码起一个
-    python tools/restart_pet.py --stop     # 只关（跑冒烟测试前腾热键用这个）
+    python tools/restart_pet.py --stop     # 只关（跑冒烟测试前用它，先把在跑的退掉）
     python tools/restart_pet.py --start    # 只起
     python tools/restart_pet.py --status   # 只看看现在跑没跑
 
@@ -11,8 +11,7 @@
 
 1. **源码是启动时读的**——挂件在跑，你改的 `.py` 一行都不生效；
 2. **它退出时会把内存里的配置和记忆写回文件**，所以"开着的时候改配置"会被盖掉；
-3. **它注册的全局热键是独占的**——留着它在跑，冒烟测试里的热键用例会假失败
-   （现象是"注册成功了但收不到按键"）。
+3. 冒烟测试跑的是同一份源码和素材，两边一起动项目目录容易打架。
 
 于是流程固定成：`--stop` → 改 → 跑测试 → `--start`。
 停和起都复用 `tools/set_key.py` 里的同一套实现（`find_running_pet` / `stop_pets` / `start_pet`），
