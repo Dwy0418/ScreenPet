@@ -35,7 +35,7 @@ from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPixmap, QRe
 from PySide6.QtWidgets import QApplication, QPushButton, QWidgetAction  # noqa: E402
 
 from pet import capture, care, corpus, dialog, doing, episode, foreground, friends, humanstyle, keyinfo, make_console_safe, memarchive, mood, net, paths, persona, play, proactive, progress, scene, states, taste, watchlog, webstudy, wincap, winfind, zh  # noqa: E402
-from pet.asr import SpeechReader  # noqa: E402
+from pet.asr import AsrError, SpeechReader  # noqa: E402
 from pet.chatpanel import ChatPanel  # noqa: E402
 from pet.config import ASSETS_DIR, Config, apply_override  # noqa: E402
 from pet.friendpanel import FriendPanel  # noqa: E402
@@ -1438,7 +1438,23 @@ def main() -> int:
         panel.close()
 
     def test_asr_engine():
-        """语音输入：列语音包 + 真听一次（没麦克风 / 没人说话也得正常返回，不许抛）。"""
+        """语音输入：列语音包 + 真听一次（没麦克风 / 没人说话也得正常返回，不许抛）。
+
+        两种"这台机器没条件"的情况算**跳过**、不算失败：平台/配置上就用不了
+        （`available()` 为假），或者真去听的时候发现没有录音设备 / 没装语音包
+        （`AsrError.environment`）——云端 CI 的机器就没有麦克风，那种红叉不是回归。
+        其它报错（超时、进程起不来）照旧抛出来判失败。
+        """
+        # 先钉住"跳过"这件事本身：分类别搞错，否则 CI 上要么假失败、要么真出错也被吞掉
+        assert SpeechReader._classify(
+            'error:Exception calling "SetInputToDefaultAudioDevice" with "0" argument(s): '
+            '"Cannot find the requested data item, such as a data key or value."'
+        ) == "microphone"
+        assert SpeechReader._classify("error:No recognizer of the required ID found") == "recognizer"
+        assert SpeechReader._classify("error:系统找不到指定的文件") == ""
+        assert AsrError("boom").environment is False, "普通报错不该被当成环境问题放过"
+        assert AsrError("boom", environment=True).environment is True
+
         cfg = Config()
         cfg.asr.seconds = 1.0
         reader = SpeechReader(cfg)
@@ -1447,7 +1463,13 @@ def main() -> int:
             return
         engines = reader.recognizers()
         print(f"      语音包：{engines or '未列出'}")
-        result = reader.listen(1.0)
+        try:
+            result = reader.listen(1.0)
+        except AsrError as exc:
+            if exc.environment:
+                print(f"      这台机器没有能用的录音设备 / 语音包，跳过：{exc}")
+                return
+            raise
         print(f"      听一次：text={result.text!r} engine={result.engine!r} 耗时 {result.elapsed:.1f}s")
 
     def test_worker_chat():

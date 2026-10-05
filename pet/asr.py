@@ -28,7 +28,16 @@ SCRIPT_PATH = Path(__file__).resolve().parent / "asr.ps1"
 
 
 class AsrError(RuntimeError):
-    """语音识别用不了（没有语音包 / 没有麦克风 / 被隐私设置挡住……）。"""
+    """语音识别用不了（没有语音包 / 没有麦克风 / 被隐私设置挡住……）。
+
+    `environment=True` 表示"这台机器本身就不具备条件"（没有录音设备、没装语音包），
+    不是代码出了问题。界面上一视同仁（都当"用不了"提示），但**测试**要靠它区分：
+    云端 CI 的机器没有麦克风，那种失败不该算回归（见 tools/smoke_test.py 的 test_asr_engine）。
+    """
+
+    def __init__(self, message: str, environment: bool = False):
+        super().__init__(message)
+        self.environment = bool(environment)
 
 
 @dataclass
@@ -113,18 +122,34 @@ class SpeechReader:
         text = out.read_text(encoding="utf-8").strip() if out.exists() else ""
         flag = status.read_text(encoding="utf-8").strip() if status.exists() else ""
         if flag.startswith("error"):
-            raise AsrError(self._explain(flag))
+            kind = self._classify(flag)
+            raise AsrError(self._explain(flag), environment=kind in ("recognizer", "microphone"))
         engine = flag.split("|", 1)[1] if "|" in flag else ""
         return AsrResult(text, "", engine, elapsed)
+
+    @staticmethod
+    def _classify(flag: str) -> str:
+        """把 PowerShell 的报错归个类：recognizer / microphone / 其它（空串）。
+
+        归到前两类的意思是"**这台机器**没这个条件"——云端 CI 的机器没麦克风就走这里，
+        测试据此跳过而不是判失败；其它报错（超时、进程起不来）一律当真的出错。
+        """
+        raw = flag[len("error:"):].strip() if flag.startswith("error:") else flag
+        low = raw.lower()
+        if "recognizer" in low or "no token" in low or "installed" in low:
+            return "recognizer"
+        if "microphone" in low or "audio" in low or "0x8007" in low:
+            return "microphone"
+        return ""
 
     @staticmethod
     def _explain(flag: str) -> str:
         """把 PowerShell 的报错翻译成人话。"""
         raw = flag[len("error:"):].strip() if flag.startswith("error:") else flag
-        low = raw.lower()
-        if "recognizer" in low or "no token" in low or "installed" in low:
+        kind = SpeechReader._classify(flag)
+        if kind == "recognizer":
             return f"系统里没有可用的语音识别包（{raw}）"
-        if "microphone" in low or "audio" in low or "0x8007" in low:
+        if kind == "microphone":
             return (
                 f"麦克风用不了（{raw}）：看看有没有麦克风，"
                 "以及 Windows 隐私设置里「允许桌面应用访问麦克风」是不是开着"
