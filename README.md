@@ -1161,6 +1161,8 @@ build.cmd                 :: 双击就行：装打包依赖 → 现画图标 →
 python tools/build.py --zip     :: 顺手压成 dist\ScreenPet-<版本>.zip（发给别人就是这个）
 python tools/build.py --onefile :: 想要"就一个 exe"（启动慢一点）
 python tools/build.py --clean   :: 清掉 build\ 和 dist\ 重来
+python tools/build.py --allow-dirty-seed
+                                :: 跳过"开局常识"复核（只给自己排查，正常发版别加）
 ```
 
 **打包之后程序怎么找文件**（这是最容易踩的坑，全写在 `pet/paths.py`）：
@@ -1178,12 +1180,13 @@ python tools/build.py --clean   :: 清掉 build\ 和 dist\ 重来
 学到的几条通用知识点和一份"这些话头学过了"的账本，第一次运行时写进用户自己的目录——新用户
 一装上就有这点底子，不必把同一个话题白学一遍。只撒一次（标记 `.knowledge-seed.json`，
 删掉它才会重撒），而且**只撒"谁都能听"的东西**：用户画像、爱好标签、屏幕上看来的台词/接话
-语料一律不带，怎么挑的写在 `tools/make_knowledge_seed.py` 里。
+语料一律不带，怎么挑的写在 `tools/make_knowledge_seed.py` 里。打包前还会拿同一个规则
+（`make_knowledge_seed.audit_seed()`）**复核一遍，量出私货就不出包**——这道闸在 `tools/build.py`。
 
 | 相关文件 | 干什么 |
 | --- | --- |
-| `tools/build.py` | 打包本体：素材清单、图标、版本信息、`--zip`、同步安装脚本版本号 |
-| `tools/make_knowledge_seed.py` | 从本机学到的知识里挑出"干净的那几条"做成 `knowledge.example.json`（作者用，玩家不用） |
+| `tools/build.py` | 打包本体：素材清单、图标、版本信息、`--zip`、同步安装脚本版本号、发车前复核开局常识（`--allow-dirty-seed` 才跳过） |
+| `tools/make_knowledge_seed.py` | 从本机学到的知识里挑出"干净的那几条"做成 `knowledge.example.json`，并给打包提供 `audit_seed()` 复核（作者用，玩家不用） |
 | `build.cmd` | 给不爱敲命令的人：双击 → 装依赖 → 打包 |
 | `tools/make_icon.py` | 现画 `assets/app.ico`（形象是矢量画的，所以图标得渲染一遍再交给 Pillow） |
 | `installer/ScreenPet.iss` | Inno Setup 安装包（开始菜单 + 卸载项，可选；绿色版不需要） |

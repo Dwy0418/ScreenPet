@@ -11,7 +11,7 @@
 2. **改代码**。
 3. **验证**：`python -m compileall -q pet tools main.py`，
    再 `set QT_QPA_PLATFORM=offscreen` 后跑 `python tools/smoke_test.py`（应输出「全部通过。」，
-   退出码 0；当前 82 项）。
+   退出码 0；当前 83 项）。
 4. **再起挂件**：`restart.cmd`（先停后起；只起的开关是 `--start`，`--status` 只看跑没跑）。
    收尾时挂件必须处于**运行**状态——用户平时就靠它在屏幕边上。
 
@@ -27,6 +27,11 @@
   冒烟测试里的名字要一起改（哪一项演哪个动作见 `pet/states.py::REACTIONS` 与
   `CLICK_ACTIONS`——后者是"左键点一下"的随机池）。
 - 控制台是 GBK，`print` 中文要经 `pet.make_console_safe()`；`*.cmd` 一律纯 ASCII。
+- **`knowledge.example.json` 是随包发出去的**（新用户第一次运行就撒进他自己的家，见
+  `pet/knowledge.py`）：里面**只许有"谁都能听"的通用知识**，作者的画像 / 爱好标签 / 屏幕上看来的
+  台词接话一律不许进。抽种子用 `tools/make_knowledge_seed.py`（不带参数只打印会抽到什么）；
+  打包那一步（`tools/build.py`）会拿同一个 `audit_seed()` 再复核一遍，量出私货就**不出包**
+  （要硬打加 `--allow-dirty-seed`，只给自己排查）。两个方向都别绕过去：**知识随包发，记忆各长各的**。
 - **动作分两层**：整张图的仿射（`keys` / `motion` 的正弦抖）和**逐部件**的关节
   （`pet/states.py` 的 `rig_keys`：头绕脖子、手臂绕肩）。关节位置全在 `tools/make_pet.py`
   顶上的 `RIG_*` 比例里，是照**当前这个形象**量的；换形象要一起改，或者生成时加 `--no-rig`

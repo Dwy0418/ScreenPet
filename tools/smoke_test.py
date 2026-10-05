@@ -175,6 +175,9 @@ def main() -> int:
         种子文件本身也要公开在仓库里，所以顺手把"不许夹带私货"这条也钉住：它是给所有人
         看的，不许出现书名号标题（那是某个页面的标题）、不许是提问、话头不许带平台名
         （`抖音《奔跑吧》` 这种话题名等于把作者爱看什么写给所有人看）。
+
+        还有一道闸在**打包那一步**（`seed_tool.audit_seed`，tools/build.py 调它）：量出私货
+        就不出包——因为种子文件躺在仓库里，谁都能手改，也可能被一次跑歪的抽取写脏。
         """
         seed = knowledge.load_seed()
         assert seed.get("lessons"), "种子文件里没有知识点"
@@ -190,6 +193,29 @@ def main() -> int:
             name = str(row.get("topic") or "")
             assert name in seed_tool.KEEP_TOPICS, f"{name} 不在白名单里，不该随包发出去"
             assert "《" not in name and "抖音" not in name and "快手" not in name, name
+
+        # ④ 发车前那道闸（`audit_seed`）：干净种子放行，夹带私货的一律拦住
+        #    —— 打包时 tools/build.py 就是拿它复核的：量出问题**不出包**。
+        assert seed_tool.audit_seed(seed) == [], seed_tool.audit_seed(seed)
+        dirty = {
+            "lessons": [
+                {"text": "抖音算法推荐个性化内容", "tags": ["短视频平台"]},   # 平台名 = 他用哪个 App
+                {"text": "这集都第28集了", "tags": ["常识"]},                # 照着屏幕说的
+                {"text": "液氮遇热会迅速蒸发"},                              # 没标签
+            ],
+            "topics": [
+                {"topic": "暗区突围"},                                       # 白名单外：作者的观看历史
+                {"topic": "ai"},                                             # 白名单里：放行
+            ],
+        }
+        bad = seed_tool.audit_seed(dirty)
+        assert len(bad) == 4, bad
+        flagged = " ".join(what for what, _ in bad)
+        assert "抖音" in flagged and "暗区突围" in flagged and "这集都第28集了" in flagged, bad
+        assert "ai" not in flagged, bad
+        # 打包那一步真调了它：不然"拦得住"只存在于测试里
+        build_src = (Path(__file__).resolve().parent / "build.py").read_text(encoding="utf-8")
+        assert "audit_seed" in build_src, "tools/build.py 没复核种子，脏种子可能直接进包"
 
         old_home = os.environ.get("PET_HOME")
         with tempfile.TemporaryDirectory() as tmp:

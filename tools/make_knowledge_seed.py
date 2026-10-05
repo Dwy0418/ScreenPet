@@ -171,6 +171,51 @@ def extract_topics(ledger: Dict[str, dict]) -> Tuple[List[dict], List[Tuple[str,
     return keep, drop
 
 
+def audit_seed(seed: dict) -> List[Tuple[str, str]]:
+    """复核一份种子能不能随包发出去：返回「不该发的 + 理由」，空列表 = 干净。
+
+    抽取规则（`extract_lessons` / `extract_topics`）只在**抽种子那一刻**管用，而种子文件
+    是写在仓库里的、谁都能手改，也可能被一次跑歪的抽取写脏（现场真出过：知识点里躺着
+    `抖音算法推荐个性化内容`、话头带着 `暗区突围`「王者荣耀」）。所以发车前还得照同一把
+    尺子再量一遍——`tools/build.py` 打包前就调它，量出问题就**不出包**。
+
+    干净的标准只有一条：**里面没有作者自己的东西**。知识谁都能听，口味是自己的。
+    """
+    problems: List[Tuple[str, str]] = []
+    rows = (seed.get("lessons") if isinstance(seed, dict) else None) or []
+    for row in rows:
+        row = row if isinstance(row, dict) else {}
+        text = str(row.get("text") or "").strip()
+        if not text:
+            problems.append(("（空的知识点）", "没有正文"))
+            continue
+        if SCREEN_TALK.search(text):
+            problems.append((text, "照着屏幕说的（吐槽/念画面/报集数）"))
+        elif any(word in text for word in PLATFORM_WORDS):
+            problems.append((text, "带着平台名（等于说他用哪个 App）"))
+        elif "《" in text or "》" in text:
+            problems.append((text, "页面标题的残片"))
+        elif text.endswith(("？", "?")):
+            problems.append((text, "它是提问，不是知识"))
+        elif text.endswith(TALK_TAILS):
+            problems.append((text, "冲着人说的口气，不是陈述句"))
+        elif len(text) < 6:
+            problems.append((text, "太短，不成信息"))
+        elif not row.get("tags"):
+            problems.append((text, "没有标签（标签说明这条知识讲什么，不是爱好档案）"))
+
+    for row in (seed.get("topics") if isinstance(seed, dict) else None) or []:
+        row = row if isinstance(row, dict) else {}
+        name = str(row.get("topic") or "").strip()
+        if not name:
+            problems.append(("（空的话头）", "没有名字"))
+        elif name not in KEEP_TOPICS:
+            problems.append((name, "不在白名单（作者看过什么不该写给大家）"))
+        elif any(word in name for word in PLATFORM_WORDS) or "《" in name or "》" in name:
+            problems.append((name, "带着平台名 / 书名号"))
+    return problems
+
+
 def build_seed(lessons: List[dict], topics: List[dict]) -> dict:
     """拼成种子文件（字段含义写在 `_怎么用` 里，用户打开就能看懂）。"""
     return {

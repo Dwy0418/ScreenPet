@@ -4,6 +4,8 @@
     python tools/build.py --onefile    打包成单个 dist/ScreenPet.exe（方便拷贝，启动慢一点）
     python tools/build.py --zip        压成 dist/ScreenPet-<版本>.zip（发给别人就是这个）
     python tools/build.py --clean      打包前先清掉 build/ 和 dist/
+    python tools/build.py --allow-dirty-seed
+                                       跳过「开局常识」复核（只给自己排查用，正常发版别加）
 
 打包出来是**绿色版**：解压 → 双击 `ScreenPet.exe` 就能用，不用装 Python。
 配置、记忆、语料写在 `%APPDATA%\\ScreenPet\\`（见 pet/paths.py），所以放在
@@ -15,6 +17,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -112,11 +115,57 @@ def _version_file() -> Path:
     return target
 
 
+def _audit_seed(allow_dirty: bool = False) -> None:
+    """打包前复核随包发的「开局常识」：里面不许有作者自己的东西。
+
+    这道闸**故意堵在发车口**：种子文件写在仓库里，谁都能手改，也可能被一次跑歪的抽取工具
+    写脏——现场真出过（知识点里躺着 `抖音算法推荐个性化内容`、话头带着 `暗区突围`「王者荣耀」，
+    那是作者的观看历史）。脏种子一旦进了包，等于把他的口味发给每个下载的人。
+    宁可这次不出包：**规则在 tools/make_knowledge_seed.py 的 audit_seed() 里，只有一处**。
+
+    `--allow-dirty-seed` 是给自己排查用的（打了个肯定不能发出去的包），正常发版不许加。
+    """
+    from tools import make_knowledge_seed as seed_tool
+
+    path = ROOT / seed_tool.SEED_NAME
+    if not path.exists():
+        print(f"[build] 没有 {seed_tool.SEED_NAME}（新用户就没有开局常识，继续打包）")
+        return
+    try:
+        seed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"[build] {seed_tool.SEED_NAME} 读不动，先修好再打包：{exc}")
+
+    seed = seed if isinstance(seed, dict) else {}
+    problems = seed_tool.audit_seed(seed)
+    if not problems:
+        print(
+            f"[build] 开局常识复核通过：知识点 {len(seed.get('lessons') or [])} 条 / "
+            f"话头 {len(seed.get('topics') or [])} 个（都是通用的，没有作者的私人东西）"
+        )
+        return
+
+    print(f"[build] 这份开局常识里有 {len(problems)} 处不该随包发出去：")
+    for what, why in problems[:20]:
+        print(f"[build]     · {what}——{why}")
+    if len(problems) > 20:
+        print(f"[build]     ·（还有 {len(problems) - 20} 处）")
+    if allow_dirty:
+        print("[build] --allow-dirty-seed：这次照打不误（只能自己排查用，别发出去）")
+        return
+    raise SystemExit(
+        "[build] 打包停在这一步：种子带着作者自己的东西，不许发给别人。\n"
+        "        重抽一份：python tools/make_knowledge_seed.py --write（先看它收下了什么）\n"
+        "        确实要先打包：加 --allow-dirty-seed"
+    )
+
+
 def main(argv=None) -> int:
     make_console_safe()
     args = [str(arg) for arg in (sys.argv[1:] if argv is None else argv)]
     onefile = "--onefile" in args or "-F" in args
     want_zip = "--zip" in args
+    allow_dirty = "--allow-dirty-seed" in args
 
     if "--clean" in args:
         for name in ("build", "dist"):
@@ -129,6 +178,9 @@ def main(argv=None) -> int:
         print("[build] 没装 PyInstaller。先装一次（只有打包机需要）：")
         print("        pip install -r requirements-dev.txt")
         return 1
+
+    # 复核随包发的开局常识：量出"作者自己的东西"就停在这儿，宁可这次不出包
+    _audit_seed(allow_dirty)
 
     icon = ROOT / "assets" / "app.ico"
     if not icon.exists():
