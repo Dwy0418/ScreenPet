@@ -1143,6 +1143,292 @@ def build_hand_layer(base: Image.Image, rect: Sequence[int]) -> Image.Image:
     return layer
 
 
+# ---------- 部件骨架：让动作真的是「头在点 / 手在挥」 ----------
+#
+# 早先所有帧都是**整张图**做仿射（缩放 / 位移 / 旋转），所以「点头」看着就是整体上下抖——
+# 动是动了，但看不出"头在点"。这里把形象拆成三块，各绕各的关节转：
+#
+#     躯干    头 / 手臂挖掉之后剩下的底图（挖出来的洞按旁边的颜色补上）
+#     头      绕**脖子**的枢轴：点头往下沉、摇头左右转、歪头
+#     手臂    绕**肩关节**：抬手 / 挥手 / 欢呼（垂在身侧的那只）
+#
+# 每一帧 = 躯干 → 摆好头 → 摆好手臂 → 再套原来那套整体变换（呼吸 / 弹跳照旧）。
+# 只有写了 `rig_keys` 的动作才走这条路；没写的（待机 / 说话 / 情绪那种）跟以前一模一样。
+#
+# 下面的位置全部是**画布比例**（跟别的部件一个口径），换 --size 不会错位。
+# 这套比例是照着**当前这个形象**量出来的（3D 小人：头占上半截、一只手搭在下巴上、
+# 另一只手垂在身侧）。换一张完全不同的图，部件会切歪——那就加 `--no-rig`：
+# 写了 rig_keys 的动作会自动退回"整体抖"，一帧都不会崩。
+RIG_PARTS = ("head", "arm")
+
+RIG_HEAD_CENTER = (0.410, 0.3125)                  # 头的外接椭圆（含耳朵）中心
+RIG_HEAD_RADIUS = (0.227, 0.266)                   # 半径：下沿落在下巴（y≈0.58）
+RIG_HEAD_FEATHER = 0.010                           # 掩膜羽化
+RIG_NECK = (0.406, 0.586)                          # 脖子的枢轴：点头 / 摇头都绕它
+RIG_GLOVE_BOX = (0.375, 0.547, 0.594, 0.801)       # 搭在下巴上那只手：**不跟头动**
+RIG_NECK_FILL = (0.289, 0.461, 0.547, 0.594)       # 挖头之后要补色的那一段（脖子 / 领口）
+RIG_ARM_BOX = (0.164, 0.5625, 0.344, 0.875)        # 垂在身侧那只手：袖子 + 手套
+RIG_ARM_FEATHER = 0.0137
+RIG_SHOULDER = (0.3125, 0.613)                     # 肩关节
+RIG_BODY_STRIP = (0.227, 0.586, 0.344, 0.883)      # 抬手之后露出来的躯干左边（要补色）
+RIG_ERASE_MARGIN = 3       # 挖洞比部件层大几圈（3 = 一圈）：免得边上留半透明残影
+
+
+def _rig_box(size: Tuple[int, int], box: Sequence[float]) -> Tuple[int, int, int, int]:
+    """比例 → 画布像素（坐标）。"""
+    side = float(max(1, size[0]))
+    left, top, right, bottom = (float(value) * side for value in box)
+    return (int(round(left)), int(round(top)), int(round(right)), int(round(bottom)))
+
+
+def _rig_span(size: Tuple[int, int], value: float) -> float:
+    """比例 → 画布像素（长度 / 半径）。"""
+    return float(max(1, size[0])) * float(value)
+
+
+def _rig_point(size: Tuple[int, int], point: Sequence[float]) -> Tuple[float, float]:
+    """比例 → 画布像素（一个点）。"""
+    side = float(max(1, size[0]))
+    return (float(point[0]) * side, float(point[1]) * side)
+
+
+def _ellipse_mask(
+    size: Tuple[int, int],
+    center: Sequence[float],
+    radius: Sequence[float],
+    feather: float,
+    exclude: Optional[Tuple[int, int, int, int]] = None,
+) -> Image.Image:
+    """头那一块用的掩膜：一个椭圆（可以再挖掉一块，比如搭在下巴上的手），边上羽化。"""
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse(
+        (
+            center[0] - radius[0], center[1] - radius[1],
+            center[0] + radius[0], center[1] + radius[1],
+        ),
+        fill=255,
+    )
+    if exclude:
+        draw.rounded_rectangle(exclude, radius=max(2, int(radius[0] * 0.18)), fill=0)
+    return mask.filter(ImageFilter.GaussianBlur(max(0.6, float(feather))))
+
+
+def _round_mask(size: Tuple[int, int], box: Sequence[float], feather: float) -> Image.Image:
+    """手臂那一块用的掩膜：圆角矩形 + 羽化。"""
+    left, top, right, bottom = (float(value) for value in box)
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle(
+        (left, top, right, bottom),
+        radius=max(2.0, min(right - left, bottom - top) * 0.16),
+        fill=255,
+    )
+    return mask.filter(ImageFilter.GaussianBlur(max(0.6, float(feather))))
+
+
+def _cut_layer(base: Image.Image, mask: Image.Image) -> Image.Image:
+    """按掩膜从底图上抠出一层（透明底、和画布对齐）。"""
+    layer = base.copy()
+    layer.putalpha(ImageChops.multiply(base.getchannel("A"), mask))
+    return layer
+
+
+def _erase(base: Image.Image, mask: Image.Image) -> Image.Image:
+    """挖洞。洞比部件层**略大一圈**：部件贴回去时自己的羽化边正好盖住洞沿，
+    不会在边上留下一圈半透明的残影（残影叠在深色桌面上就是一道灰边）。"""
+    wide = mask.filter(ImageFilter.MaxFilter(max(3, RIG_ERASE_MARGIN | 1)))
+    out = base.copy()
+    out.putalpha(ImageChops.multiply(base.getchannel("A"), ImageChops.invert(wide)))
+    return out
+
+
+def _part_matrix(
+    pivot: Sequence[float], angle: float = 0.0, dx: float = 0.0, dy: float = 0.0, scale: float = 1.0
+) -> Tuple[float, ...]:
+    """部件「绕自己的关节转 × 位移」的矩阵 —— **输出 → 源图**（PIL 的 transform 要的口径）。
+
+    正向是「绕 pivot 旋转 angle 度（正值 = 顺时针，跟 affine_of 一个约定）→ 缩放 → 平移」。
+    """
+    theta = math.radians(float(angle))
+    cos, sin = math.cos(theta), math.sin(theta)
+    inv = 1.0 / max(0.05, float(scale))
+    a, b = cos * inv, sin * inv
+    d, e = -sin * inv, cos * inv
+    px, py = float(pivot[0]), float(pivot[1])
+    c = px - a * (px + dx) - b * (py + dy)
+    f = py - d * (px + dx) - e * (py + dy)
+    return (a, b, c, d, e, f)
+
+
+def _affine_mul(first: Tuple[float, ...], second: Tuple[float, ...]) -> Tuple[float, ...]:
+    """先做 first、再做 second（矩阵都是「输出→源」，所以这一层是"反着套"）。"""
+    a1, b1, c1, d1, e1, f1 = first
+    a2, b2, c2, d2, e2, f2 = second
+    return (
+        a2 * a1 + b2 * d1, a2 * b1 + b2 * e1, a2 * c1 + b2 * f1 + c2,
+        d2 * a1 + e2 * d1, d2 * b1 + e2 * e1, d2 * c1 + e2 * f1 + f2,
+    )
+
+
+def _is_glove(pixel) -> bool:
+    """白手套 / 高光：又亮又几乎没颜色——补色取样时要跳过。"""
+    r, g, b, a = pixel[:4]
+    return a > 150 and min(r, g, b) > 170 and (max(r, g, b) - min(r, g, b)) < 30
+
+
+def _is_skin(pixel) -> bool:
+    """皮肤：暖、亮、**蓝通道也不低**（下巴、脸颊就在那条缝右边，取样时同样要跳过）。
+
+    靠蓝通道跟黄色衬衫分开：衬衫是 (250, 200, 60) 那种，蓝很低；皮肤蓝在 150 以上。
+    """
+    r, g, b, a = pixel[:4]
+    return a > 150 and r > 170 and r - b > 26 and b > 140
+
+
+def _body_side_fill(body: Image.Image, strip: Sequence[float]) -> Image.Image:
+    """抬手之后露出来的躯干左边：拿**右边那一列**的颜色往左涂，外沿压暗一点。
+
+    右边那一列可能是搭下巴的白手套或下巴的皮肤（它们就在这条缝的右边），所以取样要
+    跳过手套和皮肤、接着往右找，找到衬衫 / 裤子那种有颜色的像素再涂——不然会补出
+    一条白带子或者一块肉色（都真踩过）。找不到就接着用上一行的颜色往下涂。
+    """
+    x0, y0, x1, y1 = (int(round(value)) for value in strip)
+    filled = Image.new("RGBA", body.size, (0, 0, 0, 0))
+    fp = filled.load()
+    src = body.load()
+    colors: Dict[int, Tuple[int, int, int]] = {}
+    for y in range(y0, y1):
+        color: Optional[Tuple[int, int, int]] = None
+        for x in range(x1, min(body.width, x1 + int(body.width * 0.375))):
+            pixel = src[x, y]
+            if pixel[3] > 150 and not _is_glove(pixel) and not _is_skin(pixel):
+                color = (pixel[0], pixel[1], pixel[2])
+                break
+        if color is None:
+            color = colors.get(y - 1)
+        if color is None:
+            continue
+        colors[y] = color
+        for x in range(x0, x1):
+            k = 0.84 + 0.16 * (x - x0) / max(1, x1 - x0)   # 外沿暗一点，像身子侧面的转折
+            fp[x, y] = (int(color[0] * k), int(color[1] * k), int(color[2] * k), 255)
+    filled = filled.filter(ImageFilter.GaussianBlur(max(0.6, body.width * 0.0047)))
+    clip = _round_mask(body.size, (x0, y0, x1, y1), max(0.6, body.width * 0.0059))
+    return Image.composite(filled, body, clip)
+
+
+def _neck_fill(body: Image.Image, box: Sequence[float]) -> Image.Image:
+    """挖掉头之后，脖子 / 领口那一段按**下面那几行**的颜色往上接一段：
+
+    头往下一低，靠下的位置就是它在盖着；没有这一层补色，头一动就会露出一个洞。
+    """
+    x0, y0, x1, y1 = (int(round(value)) for value in box)
+    out = body.copy()
+    pixels = out.load()
+    src = body.load()
+    reach = int(round(max(4, body.height * 0.10)))
+    for x in range(x0, x1):
+        column = [y for y in range(y0, min(body.height, y1 + reach)) if src[x, y][3] > 150]
+        if not column:
+            continue
+        top = min(column)
+        color = src[x, top][:3]
+        for y in range(max(0, top - reach), top):
+            fade = max(0.0, min(1.0, 1.0 - (top - y) / float(reach + 2)))
+            if fade > 0:
+                pixels[x, y] = color + (int(round(fade * 240)),)
+    return out.filter(ImageFilter.GaussianBlur(max(0.4, body.width * 0.0023)))
+
+
+class Rig:
+    """一张底图 → 一副能摆姿势的骨架（躯干 + 会点头的头 + 会挥手的手臂）。
+
+    枢轴和掩膜的位置都在上面那堆 RIG_* 比例里；换形象改那几行（或者 --no-rig）。
+    """
+
+    def __init__(self, base: Image.Image):
+        self.size = base.size
+        self.neck = _rig_point(base.size, RIG_NECK)
+        self.shoulder = _rig_point(base.size, RIG_SHOULDER)
+        self.head_mask = _ellipse_mask(
+            base.size,
+            _rig_point(base.size, RIG_HEAD_CENTER),
+            [_rig_span(base.size, value) for value in RIG_HEAD_RADIUS],
+            _rig_span(base.size, RIG_HEAD_FEATHER),
+            exclude=_rig_box(base.size, RIG_GLOVE_BOX),
+        )
+        self.arm_mask = _round_mask(
+            base.size,
+            _rig_box(base.size, RIG_ARM_BOX),
+            _rig_span(base.size, RIG_ARM_FEATHER),
+        )
+        self.head = _cut_layer(base, self.head_mask)
+        self.arm = _cut_layer(base, self.arm_mask)
+        torso = _neck_fill(_erase(base, self.head_mask), _rig_box(base.size, RIG_NECK_FILL))
+        self.torso = _body_side_fill(
+            _erase(torso, self.arm_mask), _rig_box(base.size, RIG_BODY_STRIP)
+        )
+
+    def head_matrix(self, head: Mapping[str, float]) -> Tuple[float, ...]:
+        """头这一帧的变换（绕脖子）——输出→源。"""
+        return _part_matrix(
+            self.neck,
+            angle=float(head.get("angle", 0.0)),
+            dx=float(head.get("dx", 0.0)),
+            dy=float(head.get("dy", 0.0)),
+            scale=float(head.get("scale", 1.0)),
+        )
+
+    def arm_matrix(self, arm: Mapping[str, float]) -> Tuple[float, ...]:
+        """手臂这一帧的变换（绕肩关节）——输出→源。"""
+        return _part_matrix(
+            self.shoulder,
+            angle=float(arm.get("angle", 0.0)),
+            dx=float(arm.get("dx", 0.0)),
+            dy=float(arm.get("dy", 0.0)),
+            scale=float(arm.get("scale", 1.0)),
+        )
+
+    def pose(
+        self,
+        head: Optional[Mapping[str, float]] = None,
+        arm: Optional[Mapping[str, float]] = None,
+    ) -> Image.Image:
+        """摆一帧（还没套整体变换）：躯干 → 头 → 手臂。两个都不给 = 中立姿势。"""
+        frame = self.torso.copy()
+        frame.alpha_composite(
+            self.head
+            if not head
+            else self.head.transform(
+                self.size, Image.AFFINE, self.head_matrix(head),
+                resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0),
+            )
+        )
+        frame.alpha_composite(
+            self.arm
+            if not arm
+            else self.arm.transform(
+                self.size, Image.AFFINE, self.arm_matrix(arm),
+                resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0),
+            )
+        )
+        return frame
+
+    def eye_matrix(
+        self, body: Tuple[float, ...], head: Optional[Mapping[str, float]]
+    ) -> Tuple[float, ...]:
+        """这一帧要写进 eye_layer.json 的矩阵（**眼珠跟着头走**）。
+
+        帧是「先在底图上摆部件、再整体变换」出来的：p帧 = M(H(p源))，所以反过来的映射
+        是「先 M⁻¹ 再 H⁻¹」。顺序写反了眼珠就会飘到额头上去（真踩过）。
+        """
+        matrix = tuple(body)
+        if head:
+            matrix = _affine_mul(matrix, self.head_matrix(head))
+        return matrix
+
+
 # ---------- 动效 ----------
 
 def affine_of(
@@ -1204,7 +1490,18 @@ def warp(
 MOTIONS: Dict[str, Dict[str, float]] = {
     "idle": {"breathe_x": 0.003, "breathe_y": 0.006, "bob": 0.007, "drift": 0.001, "sway": 0.6, "jitter": 0.0},
     "talk": {"breathe_x": 0.005, "breathe_y": 0.008, "bob": 0.016, "drift": 0.002, "sway": 1.2, "jitter": 0.010},
-    "happy": {"breathe_x": 0.007, "breathe_y": 0.006, "bob": 0.024, "drift": 0.003, "sway": 1.6, "jitter": 0.0},
+    "happy": {
+        # 开心：不是"整体上下抖"，而是**轻轻一跳一跳 + 头跟着晃**——
+        # 待机切到开心（或者菜单里夸它一下）就是"看着就高兴"的样子。
+        "rig_keys": [
+            {"head": {"dy": 0.000, "angle": 0.0}},
+            {"dy": -0.008, "scale": 1.008, "squash": -0.008, "head": {"dy": -0.005, "angle": -3.0}},
+            {"dy": -0.014, "scale": 1.014, "squash": -0.014, "head": {"dy": -0.009, "angle": -4.5}},
+            {"dy": -0.004, "scale": 1.004, "head": {"dy": -0.002, "angle": -1.0}},
+            {"dy": 0.005, "scale": 0.994, "squash": 0.008, "head": {"dy": 0.003, "angle": 2.5}},
+            {"dy": -0.002, "scale": 1.002, "head": {"dy": -0.001, "angle": -2.0}},
+        ],
+    },
     "excited": {"breathe_x": 0.010, "breathe_y": 0.007, "bob": 0.036, "drift": 0.005, "sway": 2.2, "jitter": 0.014},
     "speechless": {"breathe_x": 0.002, "breathe_y": 0.006, "bob": 0.005, "drift": 0.001, "sway": 1.0, "jitter": 0.0},
     "curious": {"breathe_x": 0.003, "breathe_y": 0.006, "bob": 0.008, "drift": 0.005, "sway": 3.0, "jitter": 0.0},
@@ -1267,6 +1564,12 @@ def _key_params(keys: Sequence[Mapping[str, float]], t: float) -> Dict[str, floa
     }
 
 
+def _key_progress(index: int, count: int, loop: bool) -> float:
+    """关键帧采样点：loop=True 铺满一圈（最后一帧接回第一帧），
+    loop=False 铺在 0~1 上（含头含尾，所以最后一组写"回中立"，播完落回待机不会硬切）。"""
+    return index / max(1, count if loop else count - 1)
+
+
 def _keys_affine(
     keys: Sequence[Mapping[str, float]],
     index: int,
@@ -1274,16 +1577,8 @@ def _keys_affine(
     size: int,
     loop: bool = True,
 ) -> Tuple[float, ...]:
-    """手写关键帧 → 这一帧的仿射矩阵。
-
-    loop=True（走路 / 睡觉 / 吃饭那种循环的）：采样点铺满一圈，最后一帧接回第一帧；
-    loop=False（被戳 / 打招呼那种播一遍的）：采样点铺在 0~1 上（含头含尾），
-    所以最后一组关键帧写"回到中立姿势"，播完落回待机就不会硬切。
-    """
-    if loop:
-        t = index / max(1, count)
-    else:
-        t = index / max(1, count - 1)
+    """手写关键帧 → 这一帧的仿射矩阵（整体那一路：呼吸 / 弹跳 / 摇摆）。"""
+    t = _key_progress(index, count, loop)
     params = _key_params(keys, t)
     scale = params.get("scale", 1.0)
     squash = params.get("squash", 0.0)
@@ -1300,16 +1595,64 @@ def _keys_affine(
     )
 
 
+def _sub_keys(keys: Sequence[Mapping[str, object]], name: str) -> List[Dict[str, float]]:
+    """从 `rig_keys` 里挑出**一层**的参数：name 空 = 整体那一路（去掉 head / arm）。
+
+    挑出来的是一串「只有数字」的字典，正好能直接喂给 `_key_params` 插值。
+    """
+    out: List[Dict[str, float]] = []
+    for frame in keys:
+        if name:
+            part = frame.get(name) or {}
+            out.append({str(k): float(v) for k, v in dict(part).items()})  # type: ignore[arg-type]
+        else:
+            out.append({
+                str(k): float(v)  # type: ignore[arg-type]
+                for k, v in frame.items()
+                if k not in RIG_PARTS
+            })
+    return out
+
+
+def rig_frame_matrices(
+    spec: Mapping[str, object], index: int, count: int, size: int
+) -> Tuple[Tuple[float, ...], Dict[str, float], Dict[str, float]]:
+    """`rig_keys` → 这一帧的（整体变换矩阵, 头参数, 手臂参数）。
+
+    三层各插各的：整体那路还是 dx/dy/scale/squash/tilt 那一套，头 / 手臂是
+    `{"dy": …, "dx": …, "angle": …, "scale": …}`（dy/dx 是画布比例，angle 是度）。
+    """
+    keys = spec.get("rig_keys") or []
+    loop = bool(spec.get("keys_loop", True))
+    t = _key_progress(index, count, loop)
+    body = _keys_affine(_sub_keys(keys, ""), index, count, size, loop)
+    head = _key_params(_sub_keys(keys, "head"), t) if keys else {}
+    arm = _key_params(_sub_keys(keys, "arm"), t) if keys else {}
+    # 头 / 手臂的 dy、dx 也按画布比例写，换算成像素再交给 _part_matrix
+    for params in (head, arm):
+        if "dy" in params:
+            params["dy"] = params["dy"] * size
+        if "dx" in params:
+            params["dx"] = params["dx"] * size
+    return body, head, arm
+
+
 def motion_affine(spec: Dict[str, object], index: int, count: int, size: int) -> Tuple[float, ...]:
     """第 index 帧的仿射矩阵（build_frames 和 eye_layer.json 用的都是这一份）。
 
     spec 里给了 `keys`（手写关键帧）就按关键帧插值——`keys_loop` 决定是"转一圈"
-    还是"走一遍"；没给就退回原来那套正弦抖（呼吸 / 摇摆 / 抖动）。
+    还是"走一遍"；只给了 `rig_keys`（逐部件那套）但**没有骨架**时，退回只套它里面的
+    整体参数（幅度小一点，动作不至于消失）；都没给就退回原来那套正弦抖（呼吸 / 摇摆 / 抖动）。
     """
     keys = spec.get("keys")
     if keys:
         return _keys_affine(
             keys, index, count, size, loop=bool(spec.get("keys_loop", True))
+        )
+    rig_keys = spec.get("rig_keys")
+    if rig_keys:
+        return _keys_affine(
+            _sub_keys(rig_keys, ""), index, count, size, bool(spec.get("keys_loop", True))
         )
     phase = 2 * math.pi * index / count
     wave = math.sin(phase)
@@ -1326,19 +1669,38 @@ def motion_affine(spec: Dict[str, object], index: int, count: int, size: int) ->
     return affine_of((size, size), scale_x=sx, scale_y=sy, dx=dx, dy=dy, angle=angle)
 
 
-def motion_table(count: int, size: int) -> Dict[str, List[Tuple[float, ...]]]:
-    """每套动作、每一帧的仿射矩阵——眼珠层要靠它跟着身体一起起伏。
+def motion_tables(
+    count: int, size: int, rig: Optional["Rig"] = None
+) -> Tuple[Dict[str, List[Tuple[float, ...]]], Dict[str, List[Tuple[float, ...]]]]:
+    """每套动作、每一帧的仿射矩阵——分**眼珠**和**食指**两张表。
+
+    这两张以前是一张：整张图一起动，眼珠和食指套同一个矩阵就够了。现在头和手臂各动
+    各的，两张表就分家了——眼珠**跟着头**（不然它会飘到额头上去），食指跟着**躯干**
+    （它长在手上、手挂在身子上，不跟着头转）。
 
     这里必须**连串门动作那几套也算进去**：少一套的话，做那个动作时眼珠层和食指层
     找不到对应的矩阵，渲染器会干脆不画它们（人一动，眼睛和手就没了）。
     """
-    specs: Dict[str, Dict[str, float]] = dict(MOTIONS)
+    specs: Dict[str, Dict[str, object]] = dict(MOTIONS)  # type: ignore[arg-type]
     specs.update(play_mod.motions())      # 串门动作（见 pet/play.py）
     specs.update(states_mod.motions())    # 日常状态 / 界面互动（见 pet/states.py）
-    return {
-        name: [motion_affine(spec, index, count, size) for index in range(count)]
-        for name, spec in specs.items()
-    }
+
+    eye: Dict[str, List[Tuple[float, ...]]] = {}
+    hand: Dict[str, List[Tuple[float, ...]]] = {}
+    for name, spec in specs.items():
+        if spec.get("rig_keys") and rig is not None:
+            eye_rows: List[Tuple[float, ...]] = []
+            hand_rows: List[Tuple[float, ...]] = []
+            for index in range(count):
+                body, head, _arm = rig_frame_matrices(spec, index, count, size)
+                eye_rows.append(rig.eye_matrix(body, head))
+                hand_rows.append(body)
+            eye[name], hand[name] = eye_rows, hand_rows
+        else:
+            rows = [motion_affine(spec, index, count, size) for index in range(count)]
+            eye[name] = rows
+            hand[name] = rows
+    return eye, hand
 
 
 # ---------- 帧上的小提示符号（让动作更好读）----------
@@ -1428,18 +1790,31 @@ def build_frames(
     spec: Dict[str, object],
     count: int = FRAME_COUNT,
     size: int = 256,
+    rig: Optional["Rig"] = None,
 ) -> List[Image.Image]:
     """生成一整套帧。
 
+    * 写了 `rig_keys`（**逐部件**的手写关键帧）而且骨架可用：先在底图上把头和手臂
+      摆到这一帧的姿势，再套整体变换——这才是「头在点 / 手在挥」；
     * 只写了抖法（呼吸 / 抖动那种）：sin 走满一整圈，循环播放不会跳帧；
     * 写了 `keys`（手写关键帧）：按关键帧摆姿势，采成 count 帧；
     * `deco` 有值就再画一个小提示符号——**画在摆好姿势之后**，
       所以符号不会跟着身体一起被拉扁。
+
+    没有骨架（`--no-rig`，或者换了形象不适用）时，`rig_keys` 会自动退回"只套整体变换"：
+    动作幅度小一点，但一帧都不会崩。
     """
-    frames = [
-        warp(base, matrix=motion_affine(spec, index, count, size))
-        for index in range(count)
-    ]
+    keys = spec.get("rig_keys")
+    if keys and rig is not None:
+        frames: List[Image.Image] = []
+        for index in range(count):
+            body, head, arm = rig_frame_matrices(spec, index, count, size)
+            frames.append(warp(rig.pose(head=head, arm=arm), matrix=body))
+    else:
+        frames = [
+            warp(base, matrix=motion_affine(spec, index, count, size))
+            for index in range(count)
+        ]
     deco = str(spec.get("deco") or "")
     if deco:
         for index, frame in enumerate(frames):
@@ -1696,6 +2071,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"眼睛检查图存哪儿（默认 {EYE_PREVIEW.relative_to(ROOT)}，留空就不存）",
     )
     parser.add_argument(
+        "--no-rig",
+        action="store_true",
+        help="不要“部件骨架”（头绕脖子点、手臂绕肩挥）。默认会给形象拆出这几块，"
+        "写了逐部件关键帧的动作（点头 / 摇头 / 挥手…）才动得起来；"
+        "换了一张完全不同的图、部件切歪了，就加上它退回“整体抖”",
+    )
+    parser.add_argument(
         "--hand-box",
         help="手动指定搭在下巴上的那只手（自动找不到时用）：左,上,右,下，画布像素坐标",
     )
@@ -1824,9 +2206,6 @@ def main(argv=None) -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 每帧的身体变换矩阵：眼珠层和食指层都要跟着它走，所以算一次共用
-    warps = motion_table(count, base.width)
-
     # ---- 眼睛：抠出眼珠层、把底图里的眼珠抹掉，运行时跟着鼠标看 ----
     # 眼睛和手都在放大 PART_DETECT_SCALE 倍的画布上找：3D 渲染缩到 256 之后，眼白
     # 只剩下一个像素、而且未必和瞳孔在同一行；放大一圈再做判据才稳（几何完全一样，
@@ -1873,15 +2252,37 @@ def main(argv=None) -> int:
             print("  想手动指：--hand-box 左,上,右,下（画布像素坐标）")
 
     frames_base = base
+    blanked_eyes: Optional[Image.Image] = blank_eyes(base, eyes) if eyes else None
+    if blanked_eyes is not None:
+        frames_base = blanked_eyes
+    blanked_hand: Optional[Image.Image] = None
+    if hand is not None:
+        blanked_hand = blank_hand(frames_base, hand)
+        frames_base = blanked_hand
+
+    # ---- 骨架：把形象拆成「躯干 / 头 / 手臂」，头绕脖子点、手臂绕肩挥 ----
+    # 必须等眼珠和食指都抹掉之后再拆：不然瞳孔会被烤进头那一层，运行时又叠一层眼珠，
+    # 鼠标一动就是"四只眼"。
+    rig: Optional[Rig] = None
+    if not args.no_rig:
+        rig = Rig(frames_base)
+        print(
+            "骨架：头绕脖子转（脖子 "
+            f"{tuple(int(round(v)) for v in rig.neck)}）、手臂绕肩转（肩 "
+            f"{tuple(int(round(v)) for v in rig.shoulder)}）"
+            "—— 点头 / 摇头 / 挥手这些动作是真的在动关节"
+        )
+
+    # 每帧的变换矩阵：眼珠跟**头**走、食指跟**躯干**走，所以是两张表
+    eye_warps, hand_warps = motion_tables(count, base.width, rig)
+
     if eyes:
-        blanked = blank_eyes(base, eyes)
         layer = build_eye_layer(base, eyes)
         irises = eye_patches(base, eyes)
         travel = max(0.0, float(args.eye_travel)) * (sum(irises) / float(len(irises)))
-        write_eye_assets(out_dir, base.width, layer, eyes, travel, warps)
-        frames_base = blanked
+        write_eye_assets(out_dir, base.width, layer, eyes, travel, eye_warps)
         if args.eye_preview:
-            write_eye_preview(base, layer, blanked, eyes, Path(args.eye_preview), irises)
+            write_eye_preview(base, layer, blanked_eyes, eyes, Path(args.eye_preview), irises)
         where = "  ".join(f"({cx:.0f},{cy:.0f}) r={r:.1f}" for cx, cy, r in eyes)
         print(f"眼睛：{where}；会跟着鼠标动的**眼珠**半径 " +
               " / ".join(f"{value:.1f}" for value in irises) + "（眼线、眼睑留在底图不动）")
@@ -1891,13 +2292,11 @@ def main(argv=None) -> int:
 
     if hand is not None:
         layer = build_hand_layer(base, hand)
-        blanked = blank_hand(frames_base, hand)
         lift = max(0.0, float(args.tap_lift))
         period = max(0.4, float(args.tap_period))
-        write_hand_assets(out_dir, base.width, layer, hand, lift, period, warps)
-        frames_base = blanked
+        write_hand_assets(out_dir, base.width, layer, hand, lift, period, hand_warps)
         if args.hand_preview:
-            write_hand_preview(base, layer, blanked, hand, Path(args.hand_preview))
+            write_hand_preview(base, layer, blanked_hand, hand, Path(args.hand_preview))
         print(f"手：食指那一段 {tuple(int(v) for v in hand)}，每 {period:.1f} 秒轻轻敲两下下巴")
     elif clear_part_assets(out_dir, (HAND_LAYER_FILE, HAND_META_FILE)):
         print("已清掉上一版的食指层（这个形象没有手）。")
@@ -1908,7 +2307,7 @@ def main(argv=None) -> int:
             write_frames(
                 out_dir,
                 name,
-                build_frames(frames_base, spec, count=count, size=frames_base.width),
+                build_frames(frames_base, spec, count=count, size=frames_base.width, rig=rig),
             )
         )
     print(f"写好 {total} 帧（{len(MOTIONS)} 套动作 × {count} 帧）→ {rel(out_dir)}")
@@ -1922,7 +2321,7 @@ def main(argv=None) -> int:
             write_frames(
                 out_dir,
                 name,
-                build_frames(frames_base, spec, count=count, size=frames_base.width),
+                build_frames(frames_base, spec, count=count, size=frames_base.width, rig=rig),
             )
         )
     if act_total:
@@ -1938,7 +2337,7 @@ def main(argv=None) -> int:
             write_frames(
                 out_dir,
                 name,
-                build_frames(frames_base, spec, count=count, size=frames_base.width),
+                build_frames(frames_base, spec, count=count, size=frames_base.width, rig=rig),
             )
         )
     if pose_total:

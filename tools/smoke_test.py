@@ -2583,9 +2583,11 @@ def main() -> int:
         # 待机 / 说话是本来就有的帧，不重复生成；其余每一条都得给参数
         made_states = states_mod.motions()
         assert set(made_states) == {p.key for p in states_mod.POSES} - {"idle", "talk"}, sorted(made_states)
-        # 两条路都算数：手写关键帧（keys，逐状态编排的动作）或正弦抖法（bob，呼吸那种）
+        # 三条路都算数：**逐部件**关键帧（rig_keys：头绕脖子、手臂绕肩，各摆各的）、
+        # 整张图手写关键帧（keys）、正弦抖法（bob，呼吸那种）
         assert all(
-            "bob" in spec or "keys" in spec for spec in made_states.values()
+            "bob" in spec or "keys" in spec or "rig_keys" in spec
+            for spec in made_states.values()
         ), made_states
         # 手写关键帧的那几条：得说清是"转一圈"还是"走一遍"（采样方式不同），参数得是数
         deco_names = {"spark", "?", "!", "anger", "sad"}   # 跟 tools/make_pet.py 的 DECO_COLORS 对齐
@@ -2597,8 +2599,48 @@ def main() -> int:
                 # 单拍可以写空字典 = "这一拍回到中立姿势"（每个量都取默认值）
                 for frame in keys:  # type: ignore[union-attr]
                     assert all(isinstance(v, float) for v in frame.values()), (key, frame)
+            if "rig_keys" in spec:
+                # 逐部件关键帧：整体参数是数，head / arm 是「名字 → 数」的小字典（不能是空的）
+                assert isinstance(spec.get("keys_loop"), bool), (key, spec)
+                rig_keys = spec["rig_keys"]
+                assert rig_keys, key
+                for frame in rig_keys:  # type: ignore[union-attr]
+                    for name, value in frame.items():
+                        if name in ("head", "arm"):
+                            assert isinstance(value, dict) and value, (key, frame)
+                            assert all(isinstance(v, float) for v in value.values()), (key, frame)
+                        else:
+                            assert isinstance(value, float), (key, frame)
             if "deco" in spec:
                 assert str(spec["deco"]) in deco_names, (key, spec)
+        # ---- 部件骨架（tools/make_pet.py）：头一动，眼珠层得跟着头走 ----
+        # 这是最容易接错的一环：眼珠的矩阵要是没把"头绕脖子那一转"折进去，
+        # 一点头眼珠就飘到额头上（做的时候就是这么踩的，专门留一条看住它）。
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import make_pet  # noqa: E402  同目录的脚本，上面那行才刚把 tools/ 挂进来
+        fake = Image.new("RGBA", (256, 256), (200, 120, 60, 255))
+        rig = make_pet.Rig(fake)
+        assert rig.head.getbbox() is not None and rig.arm.getbbox() is not None
+        assert rig.torso.getbbox() is not None
+        nod_spec = {
+            "rig_keys": [
+                {"head": {"dy": 0.0, "angle": 0.0}, "arm": {"angle": 0.0}},
+                {"dy": 0.006, "head": {"dy": 0.05, "angle": 5.0}, "arm": {"angle": 90.0}},
+                {"head": {"dy": 0.0, "angle": 0.0}, "arm": {"angle": 0.0}},
+            ],
+            "keys_loop": False,
+        }
+        eye_table, hand_table = make_pet.motion_tables(6, 256, rig)
+        assert eye_table["nod"] != hand_table["nod"], "眼珠的矩阵得把头的变换折进去"
+        assert eye_table["idle"] == hand_table["idle"], "没写 rig_keys 的动作，两张表要一模一样"
+        body, head, arm = make_pet.rig_frame_matrices(nod_spec, 1, 6, 256)
+        assert body and head.get("dy") and arm.get("angle"), (body, head, arm)
+        frames = make_pet.build_frames(fake, nod_spec, count=6, size=256, rig=rig)
+        assert len(frames) == 6 and frames[0].getbbox() is not None
+        # 没有骨架（--no-rig）时：rig_keys 退回"只套整体参数"，一样出帧、不能崩
+        plain = make_pet.build_frames(fake, nod_spec, count=6, size=256)
+        assert len(plain) == 6 and plain[0].getbbox() is not None
+
         # 两张映射表里指到的名字都得真存在（写错名字 = 那一刻什么都不发生）
         for table in (states_mod.STATES, states_mod.REACTIONS, states_mod.MOOD_ACTIONS):
             for key, name in table.items():

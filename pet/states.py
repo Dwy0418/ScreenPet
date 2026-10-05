@@ -30,7 +30,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, Mapping, Optional, Tuple
 
 from . import mood as mood_mod
 
@@ -61,11 +61,32 @@ class Pose:
     #: 画在帧上的小提示符号（可选）：spark 星星 / ? / ! / anger 怒气 / sad 汗滴。
     #: 只是让动作更好读（一个字都不上界面），见 tools/make_pet.py 的 paint_deco。
     deco: str = ""
+    #: **逐部件**关键帧（可选）：头绕脖子转、手臂绕肩转，各摆各的姿势——
+    #: 这才是"真的在点头 / 在挥手"，而不是整张图一起上下抖。
+    #: 每一组：整体参数（dx/dy/scale/squash/tilt，同 `keys`）+ 两个部件：
+    #:
+    #:     "head"  头绕**脖子**：dy/dx 位移（占画布比例，正 = 下 / 右）、angle 旋转（度，正 = 顺时针）
+    #:     "arm"   手臂绕**肩关节**：angle 正 = 往外侧抬起来（画面左边那只手）
+    #:
+    #: 骨架见 tools/make_pet.py 的 RIG_*（换形象要改那几行，或者生成时加 --no-rig）。
+    #: 没有骨架时会自动退回"只套整体参数"：幅度小一点，但一帧都不会崩。
+    rig_keys: Tuple[Dict[str, object], ...] = ()
 
 
 def _k(**params: float) -> Dict[str, float]:
     """写一组关键帧参数（没写的当 0；scale 单独给，不写就是 1.0）。"""
     return {name: float(value) for name, value in params.items()}
+
+
+def _rig(*frames: Mapping[str, object]) -> Tuple[Dict[str, object], ...]:
+    """写一串**逐部件**关键帧（头 / 手臂各摆各的，见 Pose.rig_keys）。"""
+    out = []
+    for frame in frames:
+        item: Dict[str, object] = {}
+        for name, value in frame.items():
+            item[name] = dict(value) if isinstance(value, Mapping) else float(value)  # type: ignore[arg-type]
+        out.append(item)
+    return tuple(out)
 
 
 # 18 条日常状态。前两条（待机 / 说话）是本来就有的帧，列在这儿是为了"一共多少条"说得清，
@@ -82,87 +103,137 @@ POSES: Tuple[Pose, ...] = (
         _k(dy=0.018, dx=0.008, tilt=4, squash=0.050),      # 右脚着地
         _k(dy=-0.012, dx=0.002, tilt=1, squash=-0.020),    # 再抬起来
     )),
-    Pose("sit", "坐下", "happy", 3.0, True,
-         {"breathe_x": 0.004, "breathe_y": 0.010, "bob": 0.004, "drift": 0.006,
-          "sway": 1.5, "jitter": 0.0}),
-    # 睡觉：一泡一泡的慢呼吸（4 拍转一圈，配合 4.2 秒的周期，"最慢"那一档）
-    Pose("sleep", "睡觉", "speechless", 4.2, True, keys=(
-        _k(dy=0.004),
-        _k(dy=-0.004, scale=1.015, squash=-0.012),
-        _k(dy=0.008, scale=0.988, squash=0.020),
-        _k(dy=0.006, scale=0.995, squash=0.008),
+    # 坐下：身子松下来慢慢起伏，头也跟着轻轻往下垂一点（坐久了犯困那种）
+    Pose("sit", "坐下", "happy", 3.0, True, rig_keys=_rig(
+        {"dy": 0.002, "scale": 0.995, "head": {"dy": 0.000}},
+        {"dy": 0.004, "scale": 0.992, "head": {"dy": 0.006}},
+        {"dy": 0.002, "scale": 0.995, "head": {"dy": 0.002}},
+        {"dy": 0.000, "scale": 0.998, "head": {"dy": 0.000}},
     )),
-    Pose("stretch", "伸个懒腰", "happy", 1.4, False,
-         {"breathe_x": 0.012, "breathe_y": 0.018, "bob": 0.045, "drift": 0.003,
-          "sway": 2.0, "jitter": 0.0}),
-    Pose("think", "想事情", "curious", 2.6, True,
-         {"breathe_x": 0.003, "breathe_y": 0.005, "bob": 0.006, "drift": 0.003,
-          "sway": 3.5, "jitter": 0.0}),
+    # 睡觉：一泡一泡的慢呼吸（4 拍转一圈，配合 4.2 秒的周期，"最慢"那一档）+ 头慢慢垂下去
+    Pose("sleep", "睡觉", "speechless", 4.2, True, rig_keys=_rig(
+        {"dy": 0.004, "head": {"dy": 0.000}},
+        {"dy": -0.004, "scale": 1.015, "squash": -0.012, "head": {"dy": 0.008, "angle": 3.0}},
+        {"dy": 0.008, "scale": 0.988, "squash": 0.020, "head": {"dy": 0.018, "angle": 5.0}},
+        {"dy": 0.006, "scale": 0.995, "squash": 0.008, "head": {"dy": 0.010, "angle": 3.0}},
+    )),
+    # 伸个懒腰：身子往上长，那只垂着的手**绕肩举起来**（举过头顶那种），再收回来
+    Pose("stretch", "伸个懒腰", "happy", 1.5, False, rig_keys=_rig(
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
+        {"dy": 0.010, "scale": 0.985, "squash": 0.030, "head": {"dy": 0.006}, "arm": {"angle": 26.0}},
+        {"dy": -0.028, "scale": 1.030, "squash": -0.040, "head": {"dy": -0.010, "angle": -4.0}, "arm": {"angle": 104.0}},
+        {"dy": -0.034, "scale": 1.038, "squash": -0.048, "head": {"dy": -0.012, "angle": -5.0}, "arm": {"angle": 116.0}},
+        {"dy": -0.012, "scale": 1.010, "squash": -0.014, "head": {"dy": -0.004}, "arm": {"angle": 72.0}},
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
+    )),
+    # 想事情：头一点一点地轻晃（配上那根敲下巴的食指，就是"在想"）
+    Pose("think", "想事情", "curious", 2.6, True, rig_keys=_rig(
+        {"head": {"dy": 0.000, "angle": 0.0}},
+        {"head": {"dy": 0.008, "angle": -4.0}},
+        {"head": {"dy": 0.004, "angle": -1.0}},
+        {"head": {"dy": 0.010, "angle": 4.0}},
+    )),
     Pose("look", "张望", "curious", 2.2, True,
          {"breathe_x": 0.004, "breathe_y": 0.005, "bob": 0.008, "drift": 0.014,
           "sway": 5.0, "jitter": 0.0}),
-    Pose("nod", "点点头", "happy", 0.9, False,
-         {"breathe_x": 0.004, "breathe_y": 0.006, "bob": 0.020, "drift": 0.002,
-          "sway": 1.0, "jitter": 0.020}),
-    Pose("shake", "摇摇头", "speechless", 0.9, False,
-         {"breathe_x": 0.003, "breathe_y": 0.006, "bob": 0.008, "drift": 0.004,
-          "sway": 7.0, "jitter": 0.0}),
-    Pose("wave", "挥挥手", "happy", 1.1, False,
-         {"breathe_x": 0.008, "breathe_y": 0.006, "bob": 0.026, "drift": 0.004,
-          "sway": 5.0, "jitter": 0.010}),
-    Pose("jump", "蹦一下", "excited", 0.8, False,
-         {"breathe_x": 0.006, "breathe_y": 0.010, "bob": 0.060, "drift": 0.002,
-          "sway": 0.0, "jitter": 0.0}),
-    # 加油 / 欢呼：握拳蓄力 → 举起来 → 双拳鼓劲 → 收（播一遍就停）
-    Pose("cheer", "欢呼", "excited", 1.2, False, keys=(
-        _k(dy=0.012, scale=0.965, squash=0.050),           # 蓄力，先缩一下
-        _k(dy=-0.030, scale=1.040, squash=-0.040),         # 举起来
-        _k(dy=-0.048, scale=1.060, squash=-0.060),         # 到顶
-        _k(dy=-0.024, scale=1.030, squash=-0.030, tilt=-3),
-        _k(dy=-0.010, scale=1.010, squash=-0.010, tilt=3),
-        _k(dy=0.000),
+    # ---- 点头 / 摇头 / 挥手：这三个是**逐部件**的，头绕脖子、手绕肩 ----
+    # 点头：绕脖子往下点两下（整体几乎不动）。以前是"整只上下抖"，看不出是头在点。
+    Pose("nod", "点点头", "happy", 0.9, False, rig_keys=_rig(
+        {"head": {"dy": 0.000, "angle": 0.0}},                    # 正
+        {"dy": 0.004, "head": {"dy": 0.030, "angle": 3.0}},       # 往下一沉
+        {"dy": 0.006, "head": {"dy": 0.048, "angle": 5.0}},       # 低到底
+        {"dy": 0.002, "head": {"dy": 0.014, "angle": 1.5}},       # 抬起来
+        {"dy": 0.005, "head": {"dy": 0.040, "angle": 4.0}},       # 再点一下
+        {"dy": 0.001, "head": {"dy": 0.010, "angle": 1.0}},
+        {"dy": 0.003, "head": {"dy": 0.022, "angle": 2.0}},       # 轻轻收住
+        {"head": {"dy": 0.000, "angle": 0.0}},                    # 回正
+    )),
+    # 摇头：绕脖子左右转（角度为主、横移一点点）。横移给多了就成"平移"，不像转头。
+    Pose("shake", "摇摇头", "speechless", 0.9, False, rig_keys=_rig(
+        {"head": {"angle": 0.0}},
+        {"head": {"dx": -0.010, "angle": -9.0}},
+        {"head": {"dx": 0.012, "angle": 10.0}},
+        {"head": {"dx": -0.012, "angle": -10.0}},
+        {"head": {"dx": 0.009, "angle": 7.0}},
+        {"head": {"dx": -0.005, "angle": -4.0}},
+        {"head": {"dx": 0.002, "angle": 2.0}},
+        {"head": {"angle": 0.0}},
+    )),
+    # 挥手：垂在身侧那只手**绕肩抬起来**，再左右摆两下（角度大 = 抬得高）
+    Pose("wave", "挥挥手", "happy", 1.2, False, rig_keys=_rig(
+        {"arm": {"angle": 0.0}},                                              # 手垂着
+        {"dy": -0.004, "head": {"angle": -2.0}, "arm": {"angle": 32.0}},      # 抬起来
+        {"dy": -0.006, "head": {"angle": -3.0}, "arm": {"angle": 76.0}},
+        {"dy": -0.006, "head": {"angle": -3.0}, "arm": {"angle": 104.0}},     # 举到头边
+        {"dy": -0.004, "head": {"angle": -2.0}, "arm": {"angle": 86.0}},      # 摆回来
+        {"dy": -0.006, "head": {"angle": -3.0}, "arm": {"angle": 108.0}},     # 再摆出去
+        {"dy": -0.003, "head": {"angle": -1.0}, "arm": {"angle": 68.0}},
+        {"arm": {"angle": 0.0}},                                              # 放下
+    )),
+    # 蹦一下：身子整个弹起来，那只手也跟着往上一扬
+    Pose("jump", "蹦一下", "excited", 0.8, False, rig_keys=_rig(
+        {"scale": 0.985, "squash": 0.030, "head": {"dy": 0.008}, "arm": {"angle": 8.0}},
+        {"dy": -0.046, "scale": 1.040, "squash": -0.050, "head": {"dy": -0.014}, "arm": {"angle": 78.0}},
+        {"dy": -0.062, "scale": 1.055, "squash": -0.070, "head": {"dy": -0.020, "angle": -4.0}, "arm": {"angle": 100.0}},
+        {"dy": -0.018, "scale": 1.012, "squash": -0.012, "head": {"dy": -0.004}, "arm": {"angle": 54.0}},
+        {"dy": 0.006, "scale": 0.972, "squash": 0.060, "head": {"dy": 0.014}, "arm": {"angle": 12.0}},
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
+    )),
+    # 加油 / 欢呼：握拳蓄力 → 举起来 → 再举一下 → 收（播一遍就停）
+    Pose("cheer", "欢呼", "excited", 1.3, False, rig_keys=_rig(
+        {"dy": 0.012, "scale": 0.965, "squash": 0.050, "head": {"dy": 0.010}, "arm": {"angle": 6.0}},      # 蓄力，先缩一下
+        {"dy": -0.030, "scale": 1.040, "squash": -0.040, "head": {"dy": -0.012, "angle": -3.0}, "arm": {"angle": 82.0}},   # 举起来
+        {"dy": -0.048, "scale": 1.060, "squash": -0.060, "head": {"dy": -0.018, "angle": -5.0}, "arm": {"angle": 116.0}},  # 到顶
+        {"dy": -0.026, "scale": 1.030, "squash": -0.030, "head": {"dy": -0.008, "angle": -2.0}, "arm": {"angle": 96.0}},
+        {"dy": -0.044, "scale": 1.050, "squash": -0.052, "head": {"dy": -0.016, "angle": -4.0}, "arm": {"angle": 120.0}},  # 再举一下
+        {"dy": -0.010, "scale": 1.008, "squash": -0.010, "head": {"dy": -0.002}, "arm": {"angle": 58.0}},
+        {"dy": 0.004, "scale": 0.992, "squash": 0.012, "head": {"dy": 0.004}, "arm": {"angle": 16.0}},
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
     ), deco="spark"),
     # ---- 界面互动 / 场景情绪那几条（见 REACTIONS / MOOD_ACTIONS）----
     # 打招呼：抬手 → 左摆 → 右摆 → 再左 → 收（单击它的时候放）
-    Pose("greet", "打招呼", "happy", 0.9, False, keys=(
-        _k(dy=-0.006, scale=1.010, tilt=-2),    # 抬手
-        _k(dy=-0.016, scale=1.020, tilt=-6),    # 往左摆
-        _k(dy=-0.018, scale=1.020, tilt=6),     # 往右摆
-        _k(dy=-0.014, scale=1.015, tilt=-5),    # 再往左
-        _k(dy=0.000),                            # 收
+    Pose("greet", "打招呼", "happy", 1.0, False, rig_keys=_rig(
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
+        {"dy": -0.006, "scale": 1.010, "head": {"angle": -3.0}, "arm": {"angle": 40.0}},       # 抬手
+        {"dy": -0.010, "scale": 1.016, "head": {"angle": -5.0}, "arm": {"angle": 96.0}},       # 举到头边
+        {"dy": -0.010, "scale": 1.016, "head": {"angle": -5.0}, "arm": {"angle": 78.0}},       # 往左摆
+        {"dy": -0.012, "scale": 1.018, "head": {"angle": -6.0}, "arm": {"angle": 102.0}},      # 往右摆
+        {"dy": -0.008, "scale": 1.012, "head": {"angle": -4.0}, "arm": {"angle": 66.0}},       # 收
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
     ), deco="spark"),
     # 被戳：缩团闭眼 → 惊跳弹起 → 到顶 → 落地压扁 → 挠头傻笑（双击它的时候放）
-    Pose("poke", "被戳", "surprised", 0.8, False, keys=(
-        _k(scale=0.880, dy=0.022, squash=0.100),                 # 缩成一团
-        _k(scale=1.070, dy=-0.050, squash=-0.060, tilt=-2),      # 惊跳
-        _k(scale=1.100, dy=-0.068, squash=-0.080, tilt=2),       # 到顶
-        _k(scale=0.940, dy=0.020, squash=0.120),                 # 落地，压扁
-        _k(scale=1.020, dy=-0.008, squash=-0.020, tilt=-3),      # 挠头
-        _k(scale=1.000),                                          # 收
+    Pose("poke", "被戳", "surprised", 0.9, False, rig_keys=_rig(
+        {"scale": 0.880, "dy": 0.022, "squash": 0.100, "head": {"dy": 0.020, "angle": 4.0}, "arm": {"angle": 4.0}},       # 缩成一团
+        {"scale": 1.070, "dy": -0.050, "squash": -0.060, "head": {"dy": -0.022, "angle": -6.0}, "arm": {"angle": 86.0}},   # 惊跳
+        {"scale": 1.100, "dy": -0.068, "squash": -0.080, "head": {"dy": -0.028, "angle": -8.0}, "arm": {"angle": 112.0}},  # 到顶
+        {"scale": 0.940, "dy": 0.020, "squash": 0.120, "head": {"dy": 0.024, "angle": 6.0}, "arm": {"angle": 30.0}},       # 落地，压扁
+        {"scale": 1.020, "dy": -0.008, "squash": -0.020, "head": {"dy": -0.004, "angle": -3.0}, "arm": {"angle": 20.0}},   # 挠头
+        {"scale": 1.000, "head": {"dy": 0.000}, "arm": {"angle": 0.0}},                                                     # 收
     ), deco="!"),
-    # 疑惑：托腮 → 歪头 → 回正（拖着长音的"嗯？"）
-    Pose("confused", "疑惑", "curious", 1.0, False, keys=(
-        _k(),
-        _k(tilt=-9, dy=0.004, scale=0.990),
-        _k(tilt=5, dy=-0.004),
-        _k(),
+    # 疑惑：**歪头**（绕脖子转，不是整只斜过去）→ 回正，拽着长音的"嗯？"
+    Pose("confused", "疑惑", "curious", 1.1, False, rig_keys=_rig(
+        {"head": {"angle": 0.0}},
+        {"head": {"angle": -12.0, "dy": 0.004, "dx": -0.004}},    # 往一边歪
+        {"head": {"angle": -10.0, "dy": 0.002}},
+        {"head": {"angle": 7.0, "dx": 0.003}},                    # 往另一边歪
+        {"head": {"angle": 0.0}},
     ), deco="?"),
-    # 吃饭：捧碗张嘴 → 鼓腮咀嚼 → 再嚼 → 拍肚子满足（循环）
-    Pose("eat", "吃饭", "happy", 1.6, True, keys=(
-        _k(),
-        _k(dy=-0.010, squash=-0.020, tilt=-2),   # 张嘴，往上一够
-        _k(dy=0.006, squash=0.045, tilt=2),      # 鼓腮，嚼
-        _k(dy=-0.010, squash=-0.020, tilt=-2),
-        _k(dy=0.006, squash=0.045, tilt=2),
-        _k(),                                      # 满足，拍拍肚子
+    # 吃饭：**低下头去够一口** → 鼓腮咀嚼 → 再嚼 → 满足地拍拍肚子（循环）
+    Pose("eat", "吃饭", "happy", 1.6, True, rig_keys=_rig(
+        {"head": {"dy": 0.000}, "arm": {"angle": 0.0}},
+        {"dy": -0.008, "squash": -0.020, "head": {"dy": -0.006, "angle": -4.0}, "arm": {"angle": 14.0}},  # 抬起头张嘴
+        {"dy": 0.008, "squash": 0.045, "head": {"dy": 0.024, "angle": 7.0}, "arm": {"angle": 4.0}},       # 低头咬一口
+        {"dy": -0.004, "squash": -0.010, "head": {"dy": 0.004, "angle": 1.0}, "arm": {"angle": 10.0}},    # 鼓腮，嚼
+        {"dy": 0.006, "squash": 0.030, "head": {"dy": 0.018, "angle": 5.0}, "arm": {"angle": 2.0}},       # 再嚼
+        {"dy": 0.000, "head": {"dy": 0.000}, "arm": {"angle": 6.0}},                                      # 满足，拍拍肚子
     )),
-    # 摸鱼：往左偷看 → 往右偷看 → 偷笑 → 慌忙缩起来藏 → 装无辜（循环）
-    Pose("slack", "摸鱼", "smirk", 1.4, True, keys=(
-        _k(dx=-0.012, dy=0.004, tilt=-7),                 # 往左瞟一眼
-        _k(dx=0.012, dy=0.004, tilt=7),                   # 往右瞟一眼
-        _k(dx=0.004, dy=-0.006, squash=-0.020, tilt=-3),  # 偷笑，撑一下
-        _k(scale=0.940, dy=0.016, squash=0.060),          # 慌忙缩起来藏
-        _k(),                                              # 装无辜
+    # 摸鱼：**头绕脖子左右瞟**（身子几乎不动，看着才像"偷看"）→ 偷笑 → 慌忙缩起来藏 → 装无辜（循环）
+    Pose("slack", "摸鱼", "smirk", 1.5, True, rig_keys=_rig(
+        {"head": {"dx": -0.010, "angle": -10.0}, "arm": {"angle": 0.0}},                    # 往左瞟一眼
+        {"head": {"dx": 0.012, "angle": 11.0}},                                             # 往右瞟一眼
+        {"dy": -0.004, "head": {"dx": 0.002, "angle": -3.0}},                               # 偷笑，撑一下
+        {"dy": 0.018, "scale": 0.940, "squash": 0.060, "head": {"dy": 0.016, "angle": 2.0}},  # 慌忙缩起来藏
+        {"head": {"dy": 0.000, "angle": 0.0}},                                              # 装无辜
     )),
 )
 
@@ -238,13 +309,23 @@ MOOD_ACTIONS: Dict[str, str] = {
 def spec_of(pose: Pose) -> Dict[str, object]:
     """一条状态 → 生成帧用的那包参数（`tools/make_pet.py` 按它写 `<状态名>_NN.png`）。
 
-    * 手写了 `keys` 就带上（`keys_loop` 说明是"转一圈"还是"走一遍"）；
+    * 手写了 `rig_keys`（逐部件）就带上——**这条优先**，头绕脖子、手臂绕肩，各摆各的；
+    * 手写了 `keys` 就带上（整张图一起摆那种，`keys_loop` 说明是"转一圈"还是"走一遍"）；
     * 有 `deco` 就带上（画在帧上的小提示符号）；
     * `motion` 里的抖法照旧（没写 keys 的那几条靠它）。
     """
     spec: Dict[str, object] = dict(pose.motion)
     if pose.keys:
         spec["keys"] = [dict(frame) for frame in pose.keys]
+        spec["keys_loop"] = bool(pose.loop)
+    if pose.rig_keys:
+        spec["rig_keys"] = [
+            {
+                name: dict(value) if isinstance(value, Mapping) else float(value)  # type: ignore[arg-type]
+                for name, value in frame.items()
+            }
+            for frame in pose.rig_keys
+        ]
         spec["keys_loop"] = bool(pose.loop)
     if pose.deco:
         spec["deco"] = pose.deco
@@ -256,7 +337,11 @@ def motions() -> Dict[str, Dict[str, object]]:
 
     只返回**真给了参数**的那些：idle / talk 的帧早就有了，不用重做。
     """
-    return {pose.key: spec_of(pose) for pose in POSES if pose.motion or pose.keys}
+    return {
+        pose.key: spec_of(pose)
+        for pose in POSES
+        if pose.motion or pose.keys or pose.rig_keys
+    }
 
 
 def get(key: str) -> Optional[Pose]:

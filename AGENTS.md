@@ -26,6 +26,11 @@
   那些入口现在只在右键菜单里（`pet/window.py::_build_menu` + `pet/states.py::MENU_REACTIONS`），
   加/删入口时两边的表要一起改。
 - 控制台是 GBK，`print` 中文要经 `pet.make_console_safe()`；`*.cmd` 一律纯 ASCII。
+- **动作分两层**：整张图的仿射（`keys` / `motion` 的正弦抖）和**逐部件**的关节
+  （`pet/states.py` 的 `rig_keys`：头绕脖子、手臂绕肩）。关节位置全在 `tools/make_pet.py`
+  顶上的 `RIG_*` 比例里，是照**当前这个形象**量的；换形象要一起改，或者生成时加 `--no-rig`
+  （动作退回"只套整体参数"，不崩）。**眼珠跟头、食指跟躯干**——`motion_tables` 是两张表，
+  把头的变换漏掉，一点头眼珠就飘到额头上。
 - 跑测试时不要用 PowerShell 管道接 Python 输出（编码会花），要留文件就让程序自己写。
 - `data/*.json` 是用户真实档案（语料 / 记忆 / 学习账本），调试一律另存到临时路径，别就地改。
 - 日志在 `run.out`（挂件用 `pythonw` 起，没有控制台）；想在终端里看实时日志就 `python main.py`。
