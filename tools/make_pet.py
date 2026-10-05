@@ -1902,12 +1902,6 @@ def main(argv=None) -> int:
     elif clear_part_assets(out_dir, (HAND_LAYER_FILE, HAND_META_FILE)):
         print("已清掉上一版的食指层（这个形象没有手）。")
 
-    if args.cutout:
-        target = Path(args.cutout)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        frames_base.save(target)
-        print(f"另存抠图：{target}")
-
     total = 0
     for name, spec in MOTIONS.items():
         total += len(

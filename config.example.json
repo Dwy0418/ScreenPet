@@ -77,15 +77,6 @@
     "archive_enabled": true,
     "archive_path": "data/memory/archive.jsonl"
   },
-  "hotkey": {
-    "enabled": true,
-    "pause": "ctrl+alt+p",
-    "region": "ctrl+alt+r",
-    "say": "ctrl+alt+s",
-    "chat": "ctrl+alt+t",
-    "voice": "ctrl+alt+v",
-    "lock": "ctrl+alt+l"
-  },
   "chat": {
     "enabled": true,
     "max_chars": 90,

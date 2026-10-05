@@ -228,19 +228,6 @@ class MemoryConfig:
 
 
 @dataclass
-class HotkeyConfig:
-    """全局热键（Windows RegisterHotKey，不需要管理员权限）。"""
-
-    enabled: bool = True
-    pause: str = "ctrl+alt+p"
-    region: str = "ctrl+alt+r"  # 划观看范围：拖一块 / 双击 = 整块屏
-    say: str = "ctrl+alt+s"
-    chat: str = "ctrl+alt+t"    # 打开输入框，打字跟它聊
-    voice: str = "ctrl+alt+v"   # 打开输入框并开始听你说话
-    lock: str = "ctrl+alt+l"    # 锁定/解锁位置（鼠标穿透），锁了也能用这个键开回来
-
-
-@dataclass
 class WatchConfig:
     """看片笔记：视频一刷出来就先读一遍，之后聊到它才答得上话。"""
 
@@ -416,7 +403,6 @@ class Config:
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     ocr: OcrConfig = field(default_factory=OcrConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
     watch: WatchConfig = field(default_factory=WatchConfig)
@@ -453,7 +439,6 @@ class Config:
             persona=_build(PersonaConfig, data.get("persona")),
             ocr=_build(OcrConfig, data.get("ocr")),
             memory=_build(MemoryConfig, data.get("memory")),
-            hotkey=_build(HotkeyConfig, data.get("hotkey")),
             chat=_build(ChatConfig, data.get("chat")),
             asr=_build(AsrConfig, data.get("asr")),
             watch=_build(WatchConfig, data.get("watch")),

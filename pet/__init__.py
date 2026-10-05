@@ -12,7 +12,6 @@
     scene.py    5W1H 场景解析（人物/事件/时间/地点/原因，从模型第二行剥出来）
     memory.py   长期记忆：打标签、观众画像、memory.json 读写
     memarchive.py 完整记忆存档：memory.json 会裁剪，这本流水只增不减（一条都不丢）
-    hotkey.py   全局热键（Windows RegisterHotKey + 消息循环线程）
     proactive.py 主动搭话（什么时候该自己开口：闲置判定 + 冷却 + 每小时上限）
     foreground.py 前台窗口标题
     winfind.py  按进程找窗口（"只盯某个程序"：抖音 / B站 / 游戏；最小化的窗口给"还原后"的矩形）

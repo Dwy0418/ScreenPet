@@ -39,7 +39,6 @@ from pet.config import ASSETS_DIR, Config, apply_override  # noqa: E402
 from pet.friendpanel import FriendPanel  # noqa: E402
 from pet.friends import Guest  # noqa: E402
 from pet.guest import GuestWindow  # noqa: E402
-from pet.hotkey import HotkeyListener, format_hotkey, parse_hotkey  # noqa: E402
 from pet.memory import Episode, Memory, archive_path_for, extract_tags, topic_candidates  # noqa: E402
 from pet.ocr import TextReader, clean_lines  # noqa: E402
 from pet.overlay import RegionPicker  # noqa: E402
@@ -69,39 +68,6 @@ def check(name, func):
 def _local_ts(hour: int, minute: int = 0) -> float:
     """2026-01-05 当天本地时间某点的 epoch 秒（测 clock_text 用，不受跑测试的时刻影响）。"""
     return time.mktime((2026, 1, 5, int(hour), int(minute), 0, 0, 0, -1))
-
-
-def _press_hotkey(modifiers: int, vk: int) -> None:
-    """合成一次按键（Windows）：按下修饰键 + 主键，再按反序松开。"""
-    user32 = ctypes.windll.user32
-    vk_control, vk_alt, vk_shift, vk_win = 0x11, 0x12, 0x10, 0x5B
-    KEYUP = 0x0002
-    down = []
-    for flag, code in ((0x0002, vk_control), (0x0001, vk_alt), (0x0004, vk_shift), (0x0008, vk_win)):
-        if modifiers & flag:
-            down.append(code)
-    for code in down:
-        user32.keybd_event(code, 0, 0, 0)
-    user32.keybd_event(vk, 0, 0, 0)
-    user32.keybd_event(vk, 0, KEYUP, 0)
-    for code in reversed(down):
-        user32.keybd_event(code, 0, KEYUP, 0)
-
-
-class _HotkeyProbe(QObject):
-    """收跨线程信号的接收方。
-
-    直接 connect 到 lambda 会被当成"在发信号的线程里直接调用"，
-    用一个住在主线程的 QObject 才会走排队（Queued）连接。
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.actions = []
-
-    @Slot(str)
-    def on_triggered(self, action: str) -> None:
-        self.actions.append(action)
 
 
 def _send_mouse(widget, kind, pos, button=Qt.MouseButton.LeftButton) -> None:
@@ -201,16 +167,16 @@ def main() -> int:
             cfg = Config.load(path)
             apply_override(cfg, "ui.vertical_ratio", 0.9)
             apply_override(cfg, "capture.interval_sec", 0.5)
-            apply_override(cfg, "hotkey.region", "ctrl+alt+f9")
+            apply_override(cfg, "ui.pet_size", 128)
             assert cfg.ui.vertical_ratio == 0.9
             assert cfg.capture.interval_sec == 0.5
-            assert cfg.hotkey.region == "ctrl+alt+f9"
+            assert cfg.ui.pet_size == 128
 
             cfg.save()
             saved = json.loads(path.read_text(encoding="utf-8"))
         assert saved["ui"]["vertical_ratio"] == 0.42, saved["ui"]
         assert saved["capture"]["interval_sec"] == base.capture.interval_sec, saved["capture"]
-        assert saved["hotkey"]["region"] == base.hotkey.region, saved["hotkey"]
+        assert saved["ui"]["pet_size"] == base.ui.pet_size, saved["ui"]
 
     def test_pet_style():
         """长相（颜色 / 身形 / 五官）：配置怎么读、坏值退回哪儿、矢量形象真照它画。
@@ -687,46 +653,6 @@ def main() -> int:
             assert quiet.archive.add_episode(Episode(2.0, "也不该进")) is False
             assert quiet.archive.count() == 3, "关掉记忆还在往存档里写"
 
-    # ---------- ④ 全局热键 ----------
-
-    def test_hotkey_parse():
-        assert parse_hotkey("ctrl+alt+m") == (0x0002 | 0x0001 | 0x4000, 0x4D)
-        assert parse_hotkey("Ctrl+Shift+F9") == (0x0002 | 0x0004 | 0x4000, 0x78)
-        assert parse_hotkey("m") is None            # 没有修饰键
-        assert parse_hotkey("ctrl+") is None
-        assert parse_hotkey("ctrl+abc") is None
-        assert format_hotkey("ctrl+alt+m") == "Ctrl+Alt+M"
-        assert format_hotkey("alt+f9") == "Alt+F9"
-
-    def test_hotkey_live():
-        """真注册一次热键，再合成按键，验证整条链路。（Ctrl+Alt+F9）"""
-        if os.name != "nt":
-            print("      非 Windows，跳过")
-            return
-        listener = HotkeyListener({"test": "ctrl+alt+f9"})
-        probe = _HotkeyProbe()  # QObject 在主线程，跨线程信号才会被排队
-        listener.triggered.connect(probe.on_triggered)
-        listener.start()
-
-        deadline = time.monotonic() + 3.0
-        pressed_at = time.monotonic() + 0.8
-        while time.monotonic() < deadline:
-            if not probe.actions and time.monotonic() >= pressed_at:
-                _press_hotkey(0x0002 | 0x0001, 0x78)  # Ctrl + Alt + F9
-                pressed_at = deadline + 1  # 只按一次
-            app.processEvents()
-            time.sleep(0.05)
-            if probe.actions:
-                break
-
-        registered = list(listener.registered)
-        listener.stop()
-        listener.wait(2000)
-
-        if not registered:
-            raise AssertionError("热键没注册上（可能被别的程序占用了）")
-        assert probe.actions == ["test"], f"注册了 {registered}，但没收到按键：{probe.actions}"
-
     # ---------- 整体组装 ----------
 
     def test_app_wiring():
@@ -741,11 +667,6 @@ def main() -> int:
         base.capture.interval_sec = 1.0
         base.capture.cooldown_sec = 0.0
         base.provider = "mock"
-        # 开着热键，用一组测试专用的组合键，避免和真在跑的挂件抢
-        base.hotkey.enabled = True
-        base.hotkey.region = "ctrl+alt+f10"
-        base.hotkey.pause = "ctrl+alt+f11"
-        base.hotkey.say = "ctrl+alt+f12"
         base.save(cfg_path)
         cfg = Config.load(cfg_path)
         assert cfg.config_path() == cfg_path
@@ -763,19 +684,11 @@ def main() -> int:
         assert isinstance(seen[0], mood.Comment), seen[0]
         assert companion.worker.memory.comment_count >= 1
 
-        # 端到端：合成 Ctrl+Alt+F10，看是不是真的弹出了"划观看范围"那个界面
-        if os.name == "nt":
-            deadline = time.monotonic() + 3.5
-            pressed = False
-            while time.monotonic() < deadline and companion._picker is None:
-                if not pressed and time.monotonic() > started + 1.5:
-                    _press_hotkey(0x0002 | 0x0001, 0x79)  # Ctrl + Alt + F10
-                    pressed = True
-                app.processEvents()
-                time.sleep(0.05)
-            assert companion._picker is not None, "按了划观看范围的热键，挂件没反应"
-            companion._picker.close()      # 别把它留在屏幕上
-            companion._picker = None
+        # 端到端：右键菜单「划一下观看范围」走的就是这条路（热键撤了，改从信号直连验证）
+        companion.pick_region()
+        assert companion._picker is not None, "「划一下观看范围」没弹出框选界面"
+        companion._picker.close()      # 别把它留在屏幕上
+        companion._picker = None
 
         # 端到端：串门那条链路也得是通的（抱抱 / 夸夸那两条热键已经并进主动搭话，撤掉了）
         seen.clear()
@@ -1067,9 +980,12 @@ def main() -> int:
         assert len(region_items) == 1, f"观看范围应该只有一项，现在有 {region_items}"
         assert not any("只看一小块" in text or "整块屏都看" in text for text in labels), labels
         assert not any("静音" in text for text in labels), f"语音/静音已经去掉，菜单里还有：{labels}"
-        # 这两项撤了：「把我钉在这儿」挪去 `Ctrl+Alt+L` 热键；「隐身时自己上网学」改成默认开着，
-        # 不再摆开关（见 pet/window.py 的 _build_menu 与 pet/config.py 的 StudyConfig）。
-        for gone in ("钉在", "钉住", "鼠标点不到我", "上网学", "隐身时自己"):
+        # 「把我钉在这儿」回到菜单了（热键整套撤掉，见 _build_menu）；「隐身时自己上网学」
+        # 不摆开关，改成默认开着（见 pet/config.py 的 StudyConfig）。
+        assert any("把我钉在这儿" in text for text in labels), (
+            f"右键菜单里少了「把我钉在这儿」：{labels}"
+        )
+        for gone in ("上网学", "隐身时自己"):
             assert not any(gone in text for text in labels), f"菜单里还留着「{gone}」：{labels}"
         assert not any(checkable for text, checkable in _MenuProbe.seen if "隐身" in text), labels
         # 「去别的屏幕逛逛」和「好友陪伴」并成一项「好友系统」（本机溜达挪进 FriendPanel 里了）
@@ -1078,10 +994,10 @@ def main() -> int:
         assert not any("好友陪伴" in text for text in labels), labels
         assert not any("测试" in text for text in labels), f"菜单里还留着测试项：{labels}"
         assert not any(len(text) > 28 for text in labels), f"菜单里还留着大段说明：{labels}"
-        # 「马上吐槽一句」只剩 `Ctrl+Alt+S` 热键；「打字跟我唠…」「说一句（语音）」合成
-        # "点一下挂件"（见下面的点击测试）——菜单里三项都不该再有
-        for gone in ("马上吐槽", "打字跟我唠", "说一句"):
-            assert not any(gone in text for text in labels), f"菜单里还留着「{gone}」：{labels}"
+        # 热键撤了（全部走鼠标）：这三项都回到菜单里——少一项，那件事就没人点得到。
+        # （点一下挂件那条"聊 / 收"的路照旧，见下面的点击测试。）
+        for back in ("马上吐槽一句（立刻看一眼）", "打字跟我唠…", "说一句（语音）"):
+            assert any(back in text for text in labels), f"右键菜单里少了「{back}」：{labels}"
         # 「设计我的形象…」：长相现调现看（见 app.open_designer），入口就在右键菜单里
         assert any("设计我的形象" in text for text in labels), f"右键菜单里没有「设计我的形象…」：{labels}"
         # 托盘让出来的那两项，得在这儿（右键菜单）找得到——托盘只管"放出来 / 收回去"
@@ -1090,8 +1006,8 @@ def main() -> int:
         # 「打开完整存档」是今天新加的：memory.json 会被裁剪，这份流水一条都不丢
         assert any("打开完整存档" in text for text in labels), f"右键菜单里少了「打开完整存档」：{labels}"
         print(
-            f"      右键菜单 {len(labels)} 项，观看范围只留一个入口，含主动搭话开关，"
-            "没有钉住 / 隐身学习那两个开关，无测试项 / 无长说明"
+            f"      右键菜单 {len(labels)} 项：观看范围只留一个入口，含主动搭话开关；"
+            "钉住 / 打字 / 语音 / 马上吐槽都回来了（热键撤了），无测试项 / 无长说明"
         )
 
         # 点一下挂件 = 想跟它说话：气泡先问一句 + 请求打开输入框
@@ -1482,8 +1398,6 @@ def main() -> int:
         cfg = Config()
         assert cfg.chat.enabled and cfg.chat.max_chars > 0
         assert cfg.asr.enabled and cfg.asr.culture
-        for spec in (cfg.hotkey.chat, cfg.hotkey.voice):
-            assert parse_hotkey(spec), spec
         path = Path(tmpdir) / "chat-config.json"
         cfg.chat.max_chars = 66
         cfg.asr.seconds = 3.5
@@ -3587,8 +3501,6 @@ def main() -> int:
     check("memory 长期记忆读写/标签/画像 + 对话类型落盘", test_memory)
     check("memarchive 完整存档（裁剪/清空/重启/关记忆都不丢）", test_memory_archive)
     check("persona 提示词（人设/时间/话头）", test_persona_prompt)
-    check("hotkey 解析与格式化", test_hotkey_parse)
-    check("hotkey 真注册 + 合成按键", test_hotkey_live)
     check("proactive 键鼠空闲与系统时钟实测", test_proactive_idle)
     check("proactive 策略时序（假时钟）", test_proactive_policy)
     check("proactive 进阶：深夜劝睡 + 记忆话头", test_proactive_extras)
@@ -4331,7 +4243,8 @@ def main() -> int:
         那把菜单以前 20 项，跟右键菜单重了一大半；要的是"托盘只管放出来 / 收回去"。
         这里静态盯一遍：托盘那边只许有「显示挂件」这一个动作；让出去的
         「打开记忆文件 / 清除长期记忆」得在右键菜单里找得到，信号也真的接上了。
-        （「马上吐槽一句」后来又去掉了：只剩 `Ctrl+Alt+S` 热键；打字 / 语音合成"点一下挂件"。）
+        （后来那几项又回到菜单里了：热键整套撤掉，"全部用鼠标"——马上吐槽 / 打字 /
+        语音 / 锁定都得能从右键菜单点到。）
         """
         root = Path(__file__).resolve().parent.parent / "pet"
         app_src = (root / "app.py").read_text(encoding="utf-8")
@@ -4347,11 +4260,18 @@ def main() -> int:
         for sig in ("memoryRequested", "clearMemoryRequested", "designRequested"):
             assert f"{sig} = Signal(" in window_src, sig
             assert f"w.{sig}.connect(" in app_src, sig
-        # 「马上吐槽一句」的入口只剩热键那一条路：菜单项和信号都清掉了
-        assert "马上吐槽" not in window_src, "右键菜单里还留着「马上吐槽一句」"
-        assert "analyzeRequested" not in window_src and "analyzeRequested" not in app_src
-        assert '"say": self.cfg.hotkey.say' in app_src, "Ctrl+Alt+S 那条热键接线也没了"
-        print("      托盘只剩「显示挂件」；打开记忆 / 清除记忆 / 设计我的形象在右键菜单里，马上吐槽只剩热键")
+        # 热键撤了（全部走鼠标）之后：这几项必须都在右键菜单里，而且信号真接上了
+        # ——少一处，那一项就是死的（点了没反应）。
+        for restored in ("马上吐槽一句（立刻看一眼）", "打字跟我唠…", "说一句（语音）", "把我钉在这儿"):
+            assert restored in window_src, f"右键菜单里又少了「{restored}」"
+        for sig in ("analyzeRequested", "chatOpenRequested", "voiceRequested", "lockRequested"):
+            assert f"{sig} = Signal(" in window_src, sig
+            assert f"w.{sig}.connect(" in app_src, sig
+        assert "hotkey" not in app_src, "热键那套又回来了（说好全部走鼠标）"
+        assert not (Path(__file__).resolve().parent.parent / "pet" / "hotkey.py").exists(), (
+            "pet/hotkey.py 还在（热键撤了就该一起删掉）"
+        )
+        print("      托盘只剩「显示挂件」；马上吐槽 / 打字 / 语音 / 锁定都在右键菜单里，热键那套已撤")
 
 
     check("抱抱本地兜底台词（给诉苦那条路用）", test_hug_local_pool)

@@ -14,7 +14,6 @@ from PIL import Image
 from . import capture, dialog, foreground, make_console_safe, mood, proactive
 from .asr import SpeechReader
 from .config import ASSETS_DIR, Config
-from .hotkey import format_hotkey, parse_hotkey
 from .memory import Memory
 from .ocr import TextReader
 from .proactive import ProactivePolicy, user_idle_seconds
@@ -39,32 +38,21 @@ def run(cfg: Config, image_path: Optional[str] = None) -> int:
         f"先读一遍再聊；时间线 {int(cfg.watch.timeline_size)} 条"
         f"{'，读笔记也关掉了' if not cfg.capture.absorb_enabled else ''}）"
     )
-    hotkeys = []
-    for name, spec in (
-        ("划观看范围", cfg.hotkey.region),
-        ("暂停", cfg.hotkey.pause),
-        ("吐槽", cfg.hotkey.say),
-        ("锁定", cfg.hotkey.lock),
-    ):
-        if not cfg.hotkey.enabled:
-            hotkeys = ["off"]
-            break
-        hotkeys.append(f"{name}={format_hotkey(spec)}" if parse_hotkey(spec) else f"{name}=非法({spec})")
-    print(f"全局热键 : {' / '.join(hotkeys)}")
-    chat_spec = format_hotkey(cfg.hotkey.chat) if parse_hotkey(cfg.hotkey.chat) else cfg.hotkey.chat
-    voice_spec = format_hotkey(cfg.hotkey.voice) if parse_hotkey(cfg.hotkey.voice) else cfg.hotkey.voice
+    print("操作方式 : 全部用鼠标（右键我 → 菜单里有全部入口；没有全局热键）")
     print(
         f"打字聊天 : {'开' if cfg.chat.enabled else '关'}"
-        f"（热键 {chat_spec}，单次最多回 {int(cfg.chat.max_chars)} 字，记住最近 {int(cfg.chat.history_size)} 轮）"
+        f"（点一下挂件，或右键「打字跟我唠…」，单次最多回 {int(cfg.chat.max_chars)} 字，"
+        f"记住最近 {int(cfg.chat.history_size)} 轮）"
     )
     reader = SpeechReader(cfg)
     if not reader.available():
-        print(f"语音输入 : 用不了（{'配置里关了' if not cfg.asr.enabled else '这台机器上没找到可用引擎'}，热键 {voice_spec}）")
+        print(f"语音输入 : 用不了（{'配置里关了' if not cfg.asr.enabled else '这台机器上没找到可用引擎'}，"
+              "右键「说一句（语音）」这个入口还在）")
     else:
         engines = reader.recognizers()
         shown = "、".join(engines) if engines else "系统默认语音包"
         print(
-            f"语音输入 : 开（{shown}，离线识别、不上传音频，热键 {voice_spec}，"
+            f"语音输入 : 开（{shown}，离线识别、不上传音频，"
             f"一次听 {cfg.asr.seconds:.0f} 秒）"
         )
     pro = cfg.proactive

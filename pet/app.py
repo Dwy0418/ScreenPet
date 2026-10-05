@@ -22,7 +22,6 @@ from .chatpanel import ChatPanel
 from .config import ASSETS_DIR, PROVIDER_PRESETS, Config, apply_override
 from .friendpanel import FriendPanel
 from .guest import GuestWindow
-from .hotkey import HotkeyListener
 from .overlay import RegionPicker
 from .sprite import PetRenderer
 from .window import PetWindow
@@ -69,8 +68,6 @@ class ScreenPet:
         self._tray: Optional[QSystemTrayIcon] = None
         self._tray_timer: Optional[QTimer] = None
         self._occluder_timer: Optional[QTimer] = None
-        self._hotkeys: Optional[HotkeyListener] = None
-        self._hotkey_warned = set()
         self._quitting = False
 
         # 好友陪伴：好友簿 + 门房（网络都在 hub 自己的后台线程里，见 friends.py）
@@ -116,6 +113,11 @@ class ScreenPet:
         w.chatRequested.connect(self.toggle_chat)
         # 右键菜单「逗它一下」：给人点的动作入口（键见 pet/states.py 的 MENU_REACTIONS）
         w.reactionRequested.connect(self.play_reaction)
+        # 热键整套撤了（全部走鼠标），这几项只从右键菜单进来：打字 / 语音 / 马上吐槽 / 锁定
+        w.chatOpenRequested.connect(self.open_chat)
+        w.voiceRequested.connect(self.open_voice)
+        w.analyzeRequested.connect(self.analyze_now)
+        w.lockRequested.connect(self._on_click_through)
         w.processLockRequested.connect(self.set_target_process)
         w.processUnlockRequested.connect(self.clear_target_process)
         self.panel.submitted.connect(self.ask)
@@ -146,7 +148,6 @@ class ScreenPet:
         # 门开着才有人能来串门；起不来（关了 / 端口被占）也只是没得串门，不当成错误
         self.hub.start()
         self._setup_tray()
-        self._start_hotkeys()
         self._update_occluder()
         # 盯着某个程序时，那个窗口可能随时被拖动/缩放：隔一会儿重新算一次"我挡没挡住它"
         self._occluder_timer = QTimer(self.window)
@@ -200,10 +201,11 @@ class ScreenPet:
         self._sync_tray()
 
     def _on_click_through(self, enabled: bool) -> None:
-        """钉住 / 松开（鼠标穿透）——只有热键 `Ctrl+Alt+L` 走这条路了。
+        """钉住 / 松开（鼠标穿透）——右键菜单「把我钉在这儿 / 松开」走这条路。
 
-        原来右键菜单里也有一项「把我钉在这儿（鼠标点不到我）」，撤了：菜单少一项，
-        位置锁定改成一个热键解决（见 `toggle_lock`）。这里照旧存盘 + 冒个泡。
+        钉上之后鼠标照样操作得了它：`window.set_click_through` 是"平时穿透、鼠标压到身上
+        就临时解锁"，所以菜单还能再点回来（以前这一项只留给热键，键盘一撤就没人点得到）。
+        这里照旧存盘 + 冒个泡。
         """
         self.window.set_click_through(enabled)
         try:
@@ -227,7 +229,7 @@ class ScreenPet:
         self.window.react(name)
 
     def toggle_lock(self) -> None:
-        """锁定 / 解锁位置（走 `Ctrl+Alt+L` 热键，见 app._on_hotkey）。"""
+        """锁定 / 解锁位置（菜单里的「把我钉在这儿 / 松开」最终也是走到这儿）。"""
         self._on_click_through(not self.window.locked)
 
     def study_summary_text(self) -> str:
@@ -263,7 +265,7 @@ class ScreenPet:
             self.window.say("好，我只在你画面有槽点的时候才说话", "speechless")
 
     def analyze_now(self) -> None:
-        """立刻看一眼并吐槽一句（右键菜单里那项已经去掉，只剩 `Ctrl+Alt+S` 这个热键）。"""
+        """立刻看一眼并吐槽一句（右键菜单「马上吐槽一句（立刻看一眼）」）。"""
         self.window.set_thinking(True)
         self.worker.analyze_now()
 
@@ -354,8 +356,8 @@ class ScreenPet:
     def open_chat(self, with_voice: bool = False) -> None:
         """弹出输入框；with_voice=True 就顺手开始听你说一句。
 
-        热键 `Ctrl+Alt+T` / `Ctrl+Alt+V` 走的就是这条路——**只开不收**：
-        按热键就是"我要说话"，哪怕面板已经开着也只是把它叫到前面来（不会反而收掉）。
+        菜单里的「打字跟我唠…」「说一句（语音）」走的就是这条路——**只开不收**：
+        点它就是"我要说话"，哪怕面板已经开着也只是把它叫到前面来（不会反而收掉）。
         """
         if not self.cfg.chat.enabled:
             self.window.say("聊天在配置里关掉了（chat.enabled = false）", "speechless")
@@ -379,7 +381,7 @@ class ScreenPet:
         self.open_chat()
 
     def open_voice(self) -> None:
-        """`Ctrl+Alt+V`：开着输入框并直接开始听你说一句（面板上的「麦克风」是同一个入口）。"""
+        """「说一句（语音）」：开着输入框并直接开始听你说一句（面板上的「麦克风」同源）。"""
         self.open_chat(with_voice=True)
 
     def ask(self, text: str) -> None:
@@ -697,58 +699,6 @@ class ScreenPet:
         self.act_show.setChecked(bool(self.window.isVisible()))
         self._tray.setToolTip(self._tray_tip())
 
-    # ---------- 全局热键 ----------
-
-    def _start_hotkeys(self) -> None:
-        if not self.cfg.hotkey.enabled:
-            return
-        bindings = {
-            "pause": self.cfg.hotkey.pause,
-            "region": self.cfg.hotkey.region,
-            "say": self.cfg.hotkey.say,
-            "chat": self.cfg.hotkey.chat,
-            "voice": self.cfg.hotkey.voice,
-            "lock": getattr(self.cfg.hotkey, "lock", "ctrl+alt+l"),
-        }
-        listener = HotkeyListener(bindings)
-        listener.triggered.connect(self._on_hotkey)
-        listener.failed.connect(self._on_hotkey_failed)
-        self._hotkeys = listener
-        listener.start()
-
-    def _on_hotkey(self, action: str) -> None:
-        if action == "pause":
-            paused = not self.window.paused
-            self.set_paused(paused)
-            self.window.say("那我先眯一会" if paused else "继续看！", "speechless" if paused else "happy")
-        elif action == "say":
-            self.window.set_thinking(True)
-            self.worker.analyze_now()
-        elif action == "region":
-            # 不用点任何菜单/弹窗：一按就能划，拖一块或者双击选整块屏
-            self.pick_region()
-        elif action == "chat":
-            self.open_chat()
-        elif action == "voice":
-            self.open_voice()
-        elif action == "lock":
-            self.toggle_lock()
-
-    def _on_hotkey_failed(self, action: str, reason: str) -> None:
-        print(f"[hotkey] {action}: {reason}")
-        if reason in self._hotkey_warned:
-            return
-        self._hotkey_warned.add(reason)
-        names = {
-            "pause": "暂停",
-            "region": "划观看范围",
-            "say": "马上吐槽",
-            "chat": "打字聊天",
-            "voice": "语音输入",
-            "lock": "锁定开关",
-        }
-        self.window.say(f"{names.get(action, action)}热键没注册上：{reason}", "speechless")
-
     # ---------- 记忆 ----------
 
     def open_memory(self) -> None:
@@ -1048,12 +998,6 @@ class ScreenPet:
             self.worker.wait(3000)
         except Exception:
             pass
-        if self._hotkeys is not None:
-            try:
-                self._hotkeys.stop()
-                self._hotkeys.wait(2000)
-            except Exception:
-                pass
         try:
             self.worker.memory.save(force=True)
         except Exception as exc:
@@ -1101,7 +1045,6 @@ def _parse_args(argv):
         help="边看边学攒够了对就自己写进 data/chat_style.json（默认只记不写；要长期开着请改 config.json）",
     )
     parser.add_argument("--no-memory", action="store_true", help="关闭长期记忆，这次不写 memory.json")
-    parser.add_argument("--no-hotkey", action="store_true", help="不注册全局热键")
     parser.add_argument("--no-proactive", action="store_true", help="关掉主动搭话（只在画面有槽点时说话）")
     parser.add_argument(
         "--target-process",
@@ -1161,8 +1104,6 @@ def main(argv=None) -> int:
         apply_override(cfg, "learn.promote", True)
     if args.no_memory:
         apply_override(cfg, "memory.enabled", False)
-    if args.no_hotkey:
-        apply_override(cfg, "hotkey.enabled", False)
     if args.no_proactive:
         apply_override(cfg, "proactive.enabled", False)
     if args.target_process:

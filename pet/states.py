@@ -214,6 +214,10 @@ MENU_REACTIONS: Tuple[Tuple[str, str], ...] = (
     ("让它伸个懒腰", "rest"),
     ("戳它一下", "poke"),
     ("让它蹦一个", "jump"),
+    # 「点点头 / 摇摇头」：它应一声、或者不同意的时候就是这个样子。以前 README 里写着、
+    # REACTIONS 表里也有（agree / deny），可是界面上一个入口都没有——等于白做。现在摆进菜单。
+    ("让它点点头（好）", "agree"),
+    ("让它摇摇头（不）", "deny"),
 )
 
 #: 抓到的画面表达什么情绪 → 顺手做一个对应的动作（`window.PetWindow.play_mood` 按这个放）。

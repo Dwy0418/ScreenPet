@@ -83,7 +83,7 @@ GAZE_BLEND = 0.22
 GAZE_REACH_PX = 320.0
 
 # 右键菜单的皮：和气泡一套语言——深色玻璃、圆角、悬停是一层青色柔光。
-# 不写 QMenu::indicator，勾选那两项（主动搭话 / 把我钉在这儿）继续用系统的对勾。
+# 不写 QMenu::indicator，勾选项（主动搭话）继续用系统的对勾。
 MENU_QSS = """
 QMenu {
     background-color: rgba(19, 24, 35, 246);
@@ -312,6 +312,10 @@ class PetWindow(QWidget):
     memoryArchiveRequested = Signal()         # 打开完整存档（只增不减的那本流水）
     clearMemoryRequested = Signal()           # 清空长期记忆（会先问一句）
     reactionRequested = Signal(str)           # 「逗它一下」：给人点的动作入口（见 app.play_reaction）
+    chatOpenRequested = Signal()              # 「打字跟我唠…」：弹出输入框（只开不收，见 app.open_chat）
+    voiceRequested = Signal()                 # 「说一句（语音）」：弹出输入框并开始听（app.open_voice）
+    analyzeRequested = Signal()               # 「马上吐槽一句」：立刻看一眼画面说一句（app.analyze_now）
+    lockRequested = Signal(bool)              # 「把我钉在这儿 / 松开」：鼠标穿透开关（app._on_click_through）
 
     def __init__(self, cfg, renderer: PetRenderer, parent: Optional[QWidget] = None):
         super().__init__(
@@ -970,6 +974,11 @@ class PetWindow(QWidget):
         menu.addAction("接着看" if self._paused else "先歇会儿（不看了）").triggered.connect(
             lambda *_: self.pauseToggled.emit(not self._paused)
         )
+        # 「马上吐槽一句」加回菜单了：以前它只剩 `Ctrl+Alt+S` 一个热键，热键一撤就成了死功能。
+        # 点这一下 = 立刻看一眼画面、说一句（见 app.analyze_now）。
+        menu.addAction("马上吐槽一句（立刻看一眼）").triggered.connect(
+            lambda *_: self.analyzeRequested.emit()
+        )
 
         # 「看哪儿」：一个入口解决"整块屏"和"划一块"——点开自己划，双击就是整块屏
         # （程序锁定的那层还留着，写在下面 _add_target_menu 里）
@@ -979,9 +988,16 @@ class PetWindow(QWidget):
         )
         self._add_target_menu(menu)
 
-        # 「跟我说说话」：打字 / 语音两个入口合成"点一下挂件"（见 _on_click），
-        # 所以菜单里不再重复给这两项——`Ctrl+Alt+T` / `Ctrl+Alt+V` 两个热键照旧
+        # 「跟我说说话」：点一下挂件是"聊 / 收"（见 _on_click），这里再补上两个明写的入口
+        # ——以前它们让位给了 `Ctrl+Alt+T` / `Ctrl+Alt+V` 两个热键，现在热键整套撤了，
+        # 打字和语音都得从鼠标走得通（这两项**只开不收**，免得跟"点一下"那条路打架）。
         self._add_section(menu, "跟我说说话")
+        menu.addAction("打字跟我唠…").triggered.connect(
+            lambda *_: self.chatOpenRequested.emit()
+        )
+        menu.addAction("说一句（语音）").triggered.connect(
+            lambda *_: self.voiceRequested.emit()
+        )
         chatty = menu.addAction("没事也来搭话（主动搭话）")
         chatty.setCheckable(True)
         chatty.setChecked(bool(self.cfg.proactive.enabled))
@@ -1003,11 +1019,14 @@ class PetWindow(QWidget):
             action.triggered.connect(lambda *_, k=key: self.reactionRequested.emit(k))
 
         # 「我自己的事」
-        # 这里原来有两项，都不见了：
-        # ①「把我钉在这儿（鼠标点不到我）」→ 位置锁定改走热键 `Ctrl+Alt+L`（见 app.toggle_lock），
-        #   菜单瘦一项，功能一点没少；②「隐身时自己上网学（不看屏幕）」→ 改成**默认开着**，
-        #   收进托盘就自己补课，不再摆开关（不想花这份钱就在配置里写 `study.enabled = false`）。
+        # ①「把我钉在这儿」回到了菜单里：以前它只走 `Ctrl+Alt+L` 热键，热键一撤就没人点得到。
+        #   钉上之后鼠标照样能操作它（鼠标压到身上会临时解锁，见 set_click_through），
+        #   所以这一项点两次就能来回切——鼠标一条路走完。
+        # ②「隐身时自己上网学（不看屏幕）」不再摆开关：改成**默认开着**，收进托盘就自己补课
+        #   （不想花这份钱就在配置里写 `study.enabled = false`）。
         self._add_section(menu, "我自己的事")
+        pinned = menu.addAction("松开（鼠标能点到我了）" if self.locked else "把我钉在这儿（鼠标点不到我）")
+        pinned.triggered.connect(lambda *_: self.lockRequested.emit(not self.locked))
         menu.addAction("我先隐身（收进托盘，点托盘图标就能叫回来）").triggered.connect(
             lambda *_: self.hideRequested.emit()
         )
