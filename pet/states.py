@@ -18,11 +18,14 @@
 界面怎么用，三个触发口子互不打扰：
 
 * `STATES` 管「它现在什么情况」（暂停 / 在听 / 在等 / 被拖）——一直循环的日常样子；
-* `REACTIONS` 管「你做了什么」（单击 / 双击 / 戳它 / 应一声）——播一遍就停；
+* `REACTIONS` 管「你做了什么」（鼠标悬停 / 单击 / 双击 / 拖完放下，右键菜单「逗它一下」）
+  ——播一遍就停；
 * `MOOD_ACTIONS` 管「抓到的画面是什么情绪」（开心 → 欢呼、好奇 → 疑惑…）——也是播一遍。
 
-三张表都是「名字 → 状态名」，窗口那边只看名字
-（见 `window.PetWindow._sync_pose` / `react` / `play_mood`）。
+前两张表都是「名字 → 状态名」，窗口那边只看名字
+（见 `window.PetWindow._sync_pose` / `react` / `play_mood`）；菜单上那一排
+「逗它一下」的按钮单独写在 `MENU_REACTIONS` 里，文案和动作名写在一起——
+省得再做出"动作有了、入口没有"那种事（有帧没人触发，等于白做）。
 """
 from __future__ import annotations
 
@@ -176,20 +179,42 @@ STATES: Dict[str, str] = {
 
 #: 你在界面上做了什么 → 播哪条一次性反应（`window.PetWindow.react` 按这个放）。
 #: 认不出来的键就什么都不做（不认识的别瞎放）。
+#: 谁在用：鼠标那几下都在窗口里——悬停 → `hover`、单击 → `click`、双击 → `double`、
+#: 拖起来再放下 → `drop`（见 `window.PetWindow._on_hover_still` / `_on_click` / `_on_drop`）；
+#: 剩下那些是**给人点**的，右键菜单「逗它一下」照 `MENU_REACTIONS` 一项项搭出来。
 REACTIONS: Dict[str, str] = {
     "click": "greet",         # 单击它一下：抬手跟你打个招呼（原来是 wave，见下面那行）
     "double": "poke",         # 双击它一下：像被戳了似的惊跳（暂停 / 继续看也走这一下）
+    "hover": "wave",          # 鼠标在它身上停一会儿：它注意到你了，冲你挥挥手
+    "drop": "jump",           # 你把它拖起来又放下：落地蹦一下（拖完那一下就是"放我下来"）
     "greet": "greet",
-    "wave": "wave",           # 老名字留着：以前"点一下"走的就是它
+    "wave": "wave",           # 老名字留着：以前"点一下"走的就是它，现在悬停用它
     "poke": "poke",           # 戳它
-    "agree": "nod",           # 应一声 / 答应
-    "deny": "shake",          # 不赞同、没听明白
+    "agree": "nod",           # 应一声 / 答应（对话那边备用，本机菜单里不放）
+    "deny": "shake",          # 不赞同、没听明白（同上）
     "cheer": "cheer",         # 高兴一下
     "rest": "stretch",        # 坐久了伸个懒腰
     "eat": "eat",             # 喂它一口
     "slack": "slack",         # 摸会儿鱼
     "confused": "confused",   # 没看懂
+    "jump": "jump",           # 蹦一下
 }
+
+#: 右键菜单「逗它一下」那一节的按钮：（菜单上的字，上面的键）。
+#: 这些动作**只有人手点才会演**——不是它自己平时的样子，也不是抓到的情绪带出来的，
+#: 所以专门列一张表：菜单照着它搭（`window.PetWindow._build_menu`）、
+#: 冒烟测试照着它一项项点过去（`tools/smoke_test.py` 的 test_window），
+#: 免得又出现"整套帧都做好了，界面上却永远看不到"。
+#: 每一项都必须是 REACTIONS 认得的键——菜单上写着什么，点下去它就演那个。
+MENU_REACTIONS: Tuple[Tuple[str, str], ...] = (
+    ("跟它打个招呼", "greet"),
+    ("喂它一口", "eat"),
+    ("夸夸它", "cheer"),
+    ("让它摸会儿鱼", "slack"),
+    ("让它伸个懒腰", "rest"),
+    ("戳它一下", "poke"),
+    ("让它蹦一个", "jump"),
+)
 
 #: 抓到的画面表达什么情绪 → 顺手做一个对应的动作（`window.PetWindow.play_mood` 按这个放）。
 #: 情绪是模型给的那一档（或本地关键词兜底，见 pet/mood.py）；这里只把"情绪"翻译成"动作"。

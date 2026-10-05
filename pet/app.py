@@ -114,6 +114,8 @@ class ScreenPet:
         # 面板开没开由面板自己说了算，挂件回头问它（快了是双击=暂停，走另一条路）。
         w.chat_open = self.panel.isVisible
         w.chatRequested.connect(self.toggle_chat)
+        # 右键菜单「逗它一下」：给人点的动作入口（键见 pet/states.py 的 MENU_REACTIONS）
+        w.reactionRequested.connect(self.play_reaction)
         w.processLockRequested.connect(self.set_target_process)
         w.processUnlockRequested.connect(self.clear_target_process)
         self.panel.submitted.connect(self.ask)
@@ -211,6 +213,18 @@ class ScreenPet:
         if enabled:
             self.window.say("锁上了，鼠标碰到我还能右键", "smirk")
         self._sync_tray()
+
+    def play_reaction(self, name: str) -> None:
+        """右键菜单「逗它一下」：**给人点的**互动入口（键见 `pet/states.py` 的 MENU_REACTIONS）。
+
+        以前这些动作只有"情绪正好撞上来"才看得到（喂一口 / 夸夸它 / 摸鱼 / 伸懒腰 / 蹦一个…），
+        想让它演一次反倒碰不到；现在菜单里点一下就有。这是纯本机的——不联网、不进提示词、
+        也不打扰它正在看的东西，就是逗它一下。
+
+        认不出来的名字由挂件那边当没事发生（`window.react` 只认 REACTIONS 里的键），
+        所以这里不必再挑一遍；以后想让"逗它"顺手记一笔 / 回一句话，就加在这儿。
+        """
+        self.window.react(name)
 
     def toggle_lock(self) -> None:
         """锁定 / 解锁位置（走 `Ctrl+Alt+L` 热键，见 app._on_hotkey）。"""

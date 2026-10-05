@@ -30,9 +30,9 @@ os.environ["PET_HOME"] = SMOKE_HOME
 from PIL import Image  # noqa: E402
 from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, QPointF, QRect, QRectF, QTimer, Qt, Slot  # noqa: E402
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPixmap, QRegion  # noqa: E402
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QWidgetAction  # noqa: E402
 
-from pet import capture, care, corpus, dialog, doing, episode, foreground, friends, humanstyle, keyinfo, make_console_safe, memarchive, mood, net, paths, persona, play, proactive, progress, scene, taste, watchlog, webstudy, wincap, winfind, zh  # noqa: E402
+from pet import capture, care, corpus, dialog, doing, episode, foreground, friends, humanstyle, keyinfo, make_console_safe, memarchive, mood, net, paths, persona, play, proactive, progress, scene, states, taste, watchlog, webstudy, wincap, winfind, zh  # noqa: E402
 from pet.asr import SpeechReader  # noqa: E402
 from pet.chatpanel import ChatPanel  # noqa: E402
 from pet.config import ASSETS_DIR, Config, apply_override  # noqa: E402
@@ -988,6 +988,42 @@ def main() -> int:
         window.react("这个互动不存在")                          # 认不出来就什么都不做
         window.set_pose("这个状态不存在")
         assert window._pose == "" and window._act == "poke", (window._pose, window._act)
+
+        # 「逗它一下」：右键菜单里那排按钮（见 states.MENU_REACTIONS）必须**项项都有落点**——
+        # 菜单上的字 → 信号 → 挂件把它演出来。这套动作以前做完了却没入口（菜单里没处点、
+        # 情绪也带不出来），界面上永远看不到，等于白做；现在挨个点一遍，少接一个就报出来。
+        menu = window._build_menu()
+        labels = [action.text() for action in menu.actions()]
+        # 分组标题是挂在 QWidgetAction 上的 QLabel（菜单一挂样式表，addSection 的标题
+        # 就画不出字了，见 window._add_section），所以标题得从 defaultWidget 里问。
+        titles = [
+            action.defaultWidget().text()
+            for action in menu.actions()
+            if isinstance(action, QWidgetAction) and action.defaultWidget() is not None
+        ]
+        assert "逗它一下" in titles, f"右键菜单里没「逗它一下」那一节：{titles}"
+        got = []
+        window.reactionRequested.connect(got.append)
+        for label, key in states.MENU_REACTIONS:
+            assert label in labels, f"菜单里没有「{label}」"
+            assert states.for_reaction(key) is not None, f"「{label}」指的 {key} 不是认得的动作"
+            next(action for action in menu.actions() if action.text() == label).trigger()
+            assert got[-1:] == [key], f"点「{label}」该报 {key}，实际 {got}"
+            window._act, window._act_until = "", 0.0        # 让上一个动作算播完
+            window.react(key)
+            assert window._act == states.REACTIONS[key], (label, window._act)
+        # 鼠标那两下新入口：停在它身上 → 挥手；拖起来放下 → 蹦一下
+        window._act, window._act_until = "", 0.0
+        window._hover_cool = 0.0
+        window._on_hover_still()
+        assert window._act == "wave", window._act               # 鼠标停在它身上 = 它跟你挥手
+        window._act, window._act_until = "", 0.0
+        window._on_hover_still()
+        assert window._act == "", "刚挥过就不该再挥（冷却里不插队）"
+        window._hover_cool = 0.0
+        window._on_drop()
+        assert window._act == "jump", window._act               # 放下 = 落地蹦一下
+        print(f"      「逗它一下」{len(states.MENU_REACTIONS)} 项都能落到动作上 + 悬停挥手 / 放下蹦一下")
 
         # 抓到的画面是什么情绪，就顺手带个动作（见 states.MOOD_ACTIONS / PetWindow.play_mood）
         window._act, window._act_until = "", 0.0               # 先让上一个动作算播完
@@ -2868,6 +2904,23 @@ def main() -> int:
                 checked += 1
         assert checked > 0
         print(f"      核对 {checked} 处跨模块引用")
+
+        # 有帧、却没人触发 = 白做的动作（用户永远看不见）。assets/pet 里每个动作名都得有人用：
+        # 它自己待着的样子（states.POSES）、两只凑一起玩的（play.MOVES），或者两张基础帧
+        # （idle / talk）。这条专拦"动作做完了、入口忘了接"——这次就是踩着它发现的。
+        # 帧还没生成（刚拉下来 / 换过形象）就跳过：这条是"别白做"，不是"必须有帧"。
+        frames_dir = Path(__file__).resolve().parent.parent / "assets" / "pet"
+        if frames_dir.is_dir():
+            names = {p.stem.rsplit("_", 1)[0] for p in frames_dir.glob("*_[0-9][0-9].png")}
+            used = (
+                {pose.key for pose in states.POSES}      # 它自己待着的样子（走路 / 吃饭 / 摸鱼…）
+                | {move.key for move in play.MOVES}      # 两只凑一起玩的（击掌 / 抱抱…）
+                | set(mood.mood_names())                 # 表情帧（开心 / 无语 / 生气…）
+                | {"idle", "talk"}                       # 两张基础帧
+            )
+            dead = sorted(name for name in names - used if name)
+            assert not dead, f"这些动作有帧却没人触发（白做）：{dead}"
+            print(f"      核对 {len(names)} 套动作帧：都有人触发，没有白做的")
 
     def test_progress_bar():
         """进度条：能认出"这支快看完了"，认不出来时什么都不做（绝不误判成看完）。"""

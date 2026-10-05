@@ -61,6 +61,8 @@ _TICK_MS = 33
 # 语音还是开着面板点「麦克风」，`Ctrl+Alt+T` / `Ctrl+Alt+V` 两个热键照旧）
 CHAT_HI = "想跟我聊些什么~"
 CLICK_SLOP = 4          # 松开时移动不超过这么多像素，才算"点了一下"，不是拖它
+HOVER_STILL_MS = 900    # 鼠标在它身上停多久算"它注意到你了"（见 _on_hover_still）
+HOVER_REACT_COOL = 25.0 # 挥手别太勤：挥过一次之后歇这么久才可能再来（秒）
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
@@ -309,6 +311,7 @@ class PetWindow(QWidget):
     designRequested = Signal()                 # 设计我的形象（见 app.open_designer / tools/design_pet.py）
     memoryArchiveRequested = Signal()         # 打开完整存档（只增不减的那本流水）
     clearMemoryRequested = Signal()           # 清空长期记忆（会先问一句）
+    reactionRequested = Signal(str)           # 「逗它一下」：给人点的动作入口（见 app.play_reaction）
 
     def __init__(self, cfg, renderer: PetRenderer, parent: Optional[QWidget] = None):
         super().__init__(
@@ -323,7 +326,10 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setWindowTitle(self.cfg.persona.name)
-        self.setToolTip("点一下跟我说话（再点一下收起）· 双击戳它一下 · 左键拖动挪位置 · 右键打开菜单")
+        self.setToolTip(
+            "点一下跟我说话（再点一下收起）· 双击戳它一下 · 鼠标停在我身上我会跟你挥手 · "
+            "左键拖动挪位置（放下我蹦一下）· 右键打开菜单"
+        )
 
         size = max(72, int(cfg.ui.pet_size))
         self.setFixedSize(size, size)
@@ -352,6 +358,13 @@ class PetWindow(QWidget):
         self._click_timer.setSingleShot(True)
         self._click_timer.setInterval(max(120, QApplication.doubleClickInterval()))
         self._click_timer.timeout.connect(self._on_click)
+        # 「鼠标在它身上停住」= 它注意到你了，冲你挥挥手（见 _on_hover_still）。
+        # 得停够 HOVER_STILL_MS 才算数：鼠标只是从它身上扫过去的时候别乱挥手。
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(HOVER_STILL_MS)
+        self._hover_timer.timeout.connect(self._on_hover_still)
+        self._hover_cool = 0.0          # 下次最早什么时候还能再挥（时间戳）
         # 「点一下聊、再点一下收」：聊天面板开没开只有 app 知道，它把这个问句接过去
         # （见 app._wire）。没人接（单测 / 单独用这个窗口）时就当"没在聊"——只有打开这一半。
         self.chat_open: Optional[Callable[[], bool]] = None
@@ -549,10 +562,11 @@ class PetWindow(QWidget):
         self.update()
 
     def react(self, event: str) -> None:
-        """你在界面上跟它互动了一下（单击 / 双击 / 戳它 / 应一声…）：播一遍小动作就停。
+        """你在界面上跟它互动了一下：播一遍小动作就停。
 
-        名字走 `states.REACTIONS`（click → 打招呼、double → 被戳、poke → 被戳…）；
-        认不出来就什么都不做。
+        名字走 `states.REACTIONS`——鼠标那几下（悬停 → 挥手、单击 → 打招呼、双击 → 被戳、
+        拖起来放下 → 蹦一下）是窗口自己发的；右键菜单「逗它一下」那几项由 `app.play_reaction`
+        送进来（键排见 `states.MENU_REACTIONS`）。认不出来就什么都不做。
         配了帧就按帧播，没配的照旧退回"蹦一下"（见 `sprite.act_lift`）——少放一套帧也不崩。
         """
         pose = states_mod.for_reaction(event)
@@ -786,6 +800,42 @@ class PetWindow(QWidget):
 
     # ---------- 鼠标 ----------
 
+    def enterEvent(self, event) -> None:
+        """鼠标挪到它身上了：先掐表——停够一会儿才算"它注意到你"（见 `_on_hover_still`）。"""
+        self._hover_timer.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        """鼠标走开了：这一眼就算过去了（别等它半路挥起手来）。"""
+        self._hover_timer.stop()
+        super().leaveEvent(event)
+
+    def _on_hover_still(self) -> None:
+        """鼠标在它身上停住了一会儿：它抬头冲你挥挥手（`states.REACTIONS` 的 hover → wave）。
+
+        三种场合不插队：**正演着别的动作**（一串情绪还没演完）、**刚挥过**
+        （`HOVER_REACT_COOL` 秒内）、**睡着了 / 你正拖着它**——这几种时候挥手都别扭。
+        """
+        now = time.monotonic()
+        if self._act and now < self._act_until:
+            return
+        if now < self._hover_cool:
+            return
+        if self._paused or self._dragging:
+            return
+        self._hover_cool = now + HOVER_REACT_COOL
+        self.react("hover")
+
+    def _on_drop(self) -> None:
+        """把它拖起来又放下：落地蹦一下（`states.REACTIONS` 的 drop → jump）。
+
+        正演着别的动作就不插队——那会儿它正忙着，蹦起来反而糊成一团。
+        """
+        now = time.monotonic()
+        if self._act and now < self._act_until:
+            return
+        self.react("drop")
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_from = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -797,6 +847,7 @@ class PetWindow(QWidget):
             if not self._dragging:
                 # 真拖起来了才算"走路"，单纯点一下不算（见 states.STATES 的 dragging）
                 self._dragging = True
+                self._hover_timer.stop()    # 正被拖着呢，别半路挥起手来（放下那一下走 _on_drop）
                 self._sync_pose()
             self.move(event.globalPosition().toPoint() - self._drag_from)
             event.accept()
@@ -813,6 +864,7 @@ class PetWindow(QWidget):
             if self._dragging:
                 self._dragging = False
                 self._sync_pose()
+                self._on_drop()             # 放下了：落地蹦一下（见 _on_drop / states.REACTIONS 的 drop）
             self._reposition_bubble()
             if not moved and not double:
                 # 点一下 = 想跟它说话。**不当场弹面板**：先等一个"双击间隔"，
@@ -940,6 +992,15 @@ class PetWindow(QWidget):
         menu.addAction("好友系统（串门 / 加好友）…").triggered.connect(
             lambda *_: self.friendsRequested.emit()
         )
+
+        # 「逗它一下」：这一节全是**给人点的互动入口**——`states.MENU_REACTIONS` 里那几个动作
+        # （喂一口 / 夸夸它 / 摸会儿鱼 / 伸个懒腰 / 蹦一个…）以前只能等情绪正好撞上来才看得到，
+        # 想让它演一次反倒碰不到；现在点这一下就有。菜单照着那张表搭、表在 states.py，
+        # 两边不会走岔；点下去纯粹是本机逗它（不联网、不进提示词，见 app.play_reaction）。
+        self._add_section(menu, "逗它一下")
+        for label, key in states_mod.MENU_REACTIONS:
+            action = menu.addAction(label)
+            action.triggered.connect(lambda *_, k=key: self.reactionRequested.emit(k))
 
         # 「我自己的事」
         # 这里原来有两项，都不见了：
