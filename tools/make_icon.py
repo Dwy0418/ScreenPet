@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PIL import Image  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from pet import make_console_safe  # noqa: E402
 from pet.config import ASSETS_DIR  # noqa: E402
 from pet.sprite import PetRenderer  # noqa: E402
 
@@ -32,6 +33,7 @@ SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
 def main(argv=None) -> int:
+    make_console_safe()
     args = [str(arg) for arg in (sys.argv[1:] if argv is None else argv)]
     dest = Path(args[0]) if args else (ASSETS_DIR / "app.ico")
     if not dest.is_absolute():

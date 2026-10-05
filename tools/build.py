@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pet import __version__          # noqa: E402
+from pet import __version__, make_console_safe   # noqa: E402
 from pet import paths as pet_paths   # noqa: E402
 
 APP_NAME = "ScreenPet"
@@ -112,6 +112,7 @@ def _version_file() -> Path:
 
 
 def main(argv=None) -> int:
+    make_console_safe()
     args = [str(arg) for arg in (sys.argv[1:] if argv is None else argv)]
     onefile = "--onefile" in args or "-F" in args
     want_zip = "--zip" in args
