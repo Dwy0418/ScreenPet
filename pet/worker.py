@@ -18,7 +18,7 @@ from .memory import Memory
 from .mood import Comment
 from .ocr import TextReader
 from .vlm import VlmError, VisionClient
-from .watchlog import WatchLog, WatchNote, format_log
+from .watchlog import WatchLog, WatchNote, format_log, hype_line
 
 
 class AnalysisWorker(QThread):
@@ -760,14 +760,28 @@ class AnalysisWorker(QThread):
             self.thinking.emit(False)
 
         if comment is None:
-            print(f"[spotlight] {kind}：这次没接上话")
-            return
-        if self.is_repeat(comment.text):
-            ack = next((line for line in humanstyle.acks() if not self.is_repeat(line)), "")
-            if not ack:
-                print(f"[spotlight] {kind}：只想到重复的话，这次算了")
+            comment = self._local_spotlight(kind)
+            if comment is None:
+                print(f"[spotlight] {kind}：这次没接上话")
                 return
-            comment = Comment(ack, "happy", comment.kind)
+            print(f"[spotlight] {kind}：模型没接上，用笔记兜了一句")
+        elif self.is_repeat(comment.text):
+            # 模型这一轮又说重了。换视频时**先**拿刚读完的笔记拼一句具体的（「前方高能：…」），
+            # 拼不出来才轮到「哈哈」这种短反应——现场日志里换一支视频屏幕上就冒一个「哈哈」，
+            # 等于什么都没说（用户原话：气泡里"有些是没有逻辑的句子"）。
+            fresh = self._note_line(kind)
+            if fresh is not None:
+                print(f"[spotlight] {kind}：模型这句说重了，改用笔记里的预告")
+                comment = fresh
+            else:
+                ack = next((line for line in humanstyle.acks() if not self.is_repeat(line)), "")
+                if not ack:
+                    comment = self._local_spotlight(kind)
+                    if comment is None:
+                        print(f"[spotlight] {kind}：只想到重复的话，这次算了")
+                        return
+                else:
+                    comment = Comment(ack, "happy", comment.kind)
         self._record_comment(comment)
         self._remember(comment.text)
         self._last_spoke_at = time.monotonic()
@@ -775,6 +789,35 @@ class AnalysisWorker(QThread):
         self.comment.emit(comment)
         self._maybe_summarize()
         print(f"[spotlight] {kind} -> {comment.text}")
+
+    def _local_spotlight(self, kind: str) -> Optional[Comment]:
+        """模型没接上话时的本地兜底：换视频就照刚读完的笔记说一句预告。
+
+        为什么非要兜：换视频是**唯一**「必须开腔」的场合（用户要的就是「视频一出来它就有反应」），
+        可模型那一轮经常交解说词 / 抄提示词，被 `vlm._to_comment` 那几道闸丢光之后，
+        屏幕上就是换了片子它一声不吭（日志里只有一行「这次没接上话」）。
+        这里只用**刚读完的笔记**里已经有的字拼一句（见 `_note_line` / `watchlog.hype_line`）：
+        有高光就先喊「前方高能」，没有就退到看点 / 内容 / 主题——不猜、不编、不调模型。
+        笔记是空的才退到本地那几句短反应；再没有就返回 None（宁可不说，也不编）。
+        """
+        noted = self._note_line(kind)
+        if noted is not None:
+            return noted
+        ack = next((line for line in humanstyle.acks() if not self.is_repeat(line)), "")
+        return Comment(ack, "happy", f"spotlight:{kind}") if ack else None
+
+    def _note_line(self, kind: str) -> Optional[Comment]:
+        """换视频那一轮，拿刚读完的笔记拼一句具体的（「前方高能：…」）；拼不出来给 None。
+
+        两道关：只有换视频才拼（别的场合没有"刚读完一支视频"这层意思）；
+        拼出来要是刚说过的话也不要——`pick` 会换开头词，真撞车了就是同一件事说两遍。
+        """
+        if kind != "new_video":
+            return None
+        line = hype_line(self.watch.current, pick=int(time.monotonic()))
+        if line and not self.is_repeat(line):
+            return Comment(line, "excited", f"spotlight:{kind}")
+        return None
 
     # ---------- 主动搭话 ----------
 

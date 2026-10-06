@@ -4,16 +4,31 @@
 
 ## 改代码的固定流程（每次都要走）
 
-1. **先关挂件**：`restart.cmd --stop`（= `python tools/restart_pet.py --stop`）。
-   不关的后果有两条，别省这一步：
-   - 挂件是**启动时读源码**的，正在跑的那个进程用的是旧代码，改动对它无效；
-   - 它退出时会把内存里的配置/记忆**写回文件**，开着改会被盖掉。
+> **本机（Duke 这台电脑）的两条硬规矩**（2026-10-06 起，用户当场定的）
+>
+> 1. **日常只跑桌面那份打包版**：`D:\HuaweiMoveData\Users\Duke\Desktop\ScreenPet\ScreenPet.exe`
+>    （快捷方式 `ScreenPet.lnk` 指的就是它）。它的配置 / 记忆 / 语料在 `%APPDATA%\ScreenPet\`。
+>    源码工程**只用来改**——改完打包、覆盖过去，**不要**再 `python main.py` 起第二个挂件。
+> 2. **源码跑出来的那一份退休了**：文件留在原地（`screen-pet/` 里的 `config.json` /
+>    `memory.json` / `data/*.json` 一个字都别动），但之后**不再运行、不再更新**。
+>    要动数据（配置、记忆、语料）一律动 `%APPDATA%\ScreenPet\` 那份——那才是他日常在用的。
+>
+> 两个后果要记住：屏幕边上**只该有一个挂件**；改完不重新打包 = 改动在他那儿等于没发生。
+
+1. **要覆盖 exe、或者要动 `%APPDATA%\ScreenPet\config.json` 时，先关掉打包版**
+   （它退出时会把内存里的配置/记忆写回文件，开着改会被盖掉；exe 文件也会被占用）。
+   只改 `.py` 不需要停——打包版读的是解包出来的旧代码，停不停都影响不到它。
+   旧的那套 `restart.cmd --stop`（= `python tools/restart_pet.py --stop`）只认
+   「python + main.py」，**动不到打包版**，别拿它当「停挂件」用。
 2. **改代码**。
 3. **验证**：`python -m compileall -q pet tools main.py`，
    再 `set QT_QPA_PLATFORM=offscreen` 后跑 `python tools/smoke_test.py`（应输出「全部通过。」，
-   退出码 0；当前 83 项）。
-4. **再起挂件**：`restart.cmd`（先停后起；只起的开关是 `--start`，`--status` 只看跑没跑）。
-   收尾时挂件必须处于**运行**状态——用户平时就靠它在屏幕边上。
+   退出码 0；当前 85 项）。冒烟测试起的是 offscreen 的 Qt，不会在屏幕上多冒一个挂件。
+4. **打包 + 覆盖 + 起图二**：`python tools/build.py`（出 `dist/ScreenPet/`），
+   把 `dist/ScreenPet/` 里的东西整个覆盖到
+   `D:\HuaweiMoveData\Users\Duke\Desktop\ScreenPet\`，再起那份 `ScreenPet.exe`。
+   收尾时它必须处于**运行**状态——用户平时就靠它在屏幕边上。
+   （`dist/ScreenPet-<版本>.zip` 是发给别人用的，本次改动**不要**顺手发版：先在他这儿看两天。）
 
 停/起的实现只有一份：`tools/set_key.py` 里的 `find_running_pet` / `stop_pets` / `start_pet`，
 `tools/restart_pet.py` 复用它，不要另写一套。

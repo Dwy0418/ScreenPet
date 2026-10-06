@@ -2254,6 +2254,88 @@ def main() -> int:
         assert replayed.records[0].actions.get("like") is True
         assert replayed.records[0].watch_sec == 40.0
 
+    def test_new_video_hype():
+        """换视频那一句：笔记里读出「高光」就先喊前方高能；模型没接上就用它兜底，绝不冷场。
+
+        现场日志里的毛病：换视频那一轮模型爱交解说词，被 `vlm._to_comment` 那几道闸
+        丢光之后只剩一行「这次没接上话」——屏幕上就是换了片子它一声不吭。
+        兜底这条路（`watchlog.hype_line` + `worker._local_spotlight`）是**纯本地**的：
+        只拿刚读完的笔记里已经有的字拼一句，不猜、不编、不调模型。
+        """
+        read = watchlog.parse_note(
+            "类型：游戏\n主题：王者荣耀直播\n内容：主播残血守家\n"
+            "高光：等对面开团他反手一个大招清场\n看点：连跪三把\n"
+        )
+        assert read.highlight == "等对面开团他反手一个大招清场", read.highlight
+        assert "高光=" in read.line(), read.line()
+        assert "高光：等对面开团" in read.block(), read.block()
+
+        hype = watchlog.hype_line(read)
+        assert hype.startswith("前方高能") and "大招清场" in hype, hype
+        # 没读出高光就退到看点；整个笔记是空的就别硬编
+        assert "连跪三把" in watchlog.hype_line(watchlog.WatchNote(point="连跪三把"))
+        assert watchlog.hype_line(watchlog.WatchNote()) == ""
+
+        cfg = Config()
+        cfg.provider = "mock"
+        cfg.memory.path = str(Path(tmpdir) / "mem-hype.json")
+        worker = AnalysisWorker(cfg)
+        worker.watch.start_video(read, at=1000.0)
+        local = worker._local_spotlight("new_video")
+        # 开头词是按时间轮换的（「前方高能」占一半），这里只钉住「说的是笔记里那件事」
+        assert local is not None and "大招清场" in local.text, local
+        assert local.mood == "excited" and local.kind == "spotlight:new_video", local
+        worker._local_spotlight("action")      # 别的场合也兜得住（不崩就行）
+
+    def test_spotlight_repeat_note():
+        """换视频时模型交了句刚说过的 → 改用笔记里的预告，别再冒「哈哈」这种没信息量的。
+
+        现场日志里就是这么露的马脚：`[spotlight] new_video -> 哈哈`——
+        模型那一轮说重了，代码顺手从短反应池（`humanstyle.ACKS`）里挑了个「哈哈」顶上，
+        屏幕上就孤零零一个「哈哈」，等于什么都没说（用户原话：气泡里"没逻辑的句子"）。
+        换视频是**唯一**必须开腔的场合，那就得说点具体的：笔记里刚读出的高光/看点。
+        """
+        repeat = "暗区突围啊，这把稳了"
+
+        class _EchoClient:
+            """顶掉真模型：无论问什么都交这句"刚说过的"。"""
+
+            ready = True
+
+            def spotlight(self, *args, **kwargs):
+                return mood.Comment(repeat, "happy", "spotlight:new_video")
+
+        def _probe(tag: str) -> AnalysisWorker:
+            conf = Config()
+            conf.provider = "mock"
+            conf.memory.path = str(Path(tmpdir) / f"mem-spot-{tag}.json")
+            made = AnalysisWorker(conf)
+            made._strict_repeat = True     # mock 默认不查重复，这条测试要的就是那道闸
+            made._remember(repeat)         # 假装它刚说过这么一句
+            made._client = _EchoClient()
+            return made
+
+        noted = _probe("note")
+        noted.watch.start_video(
+            watchlog.WatchNote(genre="游戏", title="暗区突围", what="三人上废楼搜物资", highlight="他要去抢队友的钥匙"),
+            at=1000.0,
+        )
+        said: list = []
+        noted.comment.connect(lambda c: said.append(c))
+        noted._spotlight("new_video", note="主题：暗区突围")
+        assert said, "换视频那句被吞了"
+        got = said[-1].text
+        assert got not in humanstyle.acks(), got          # 不许拿「哈哈」顶上
+        assert "钥匙" in got, got                          # 说的是笔记里那件具体的事
+        assert said[-1].kind == "spotlight:new_video", said[-1].kind
+
+        # 笔记是空的（没读出东西）就还得退到短反应：场子不能冷，但也不能编
+        blank = _probe("blank")
+        fell: list = []
+        blank.comment.connect(lambda c: fell.append(c))
+        blank._spotlight("new_video", note="")
+        assert fell and fell[-1].text in humanstyle.acks(), fell
+
     def test_taste_wiring():
         """worker 把口味档案接上了：看到点赞就记进档案，并当场接一句（mock 不联网）。"""
         cfg = Config()
@@ -4478,6 +4560,8 @@ def main() -> int:
         )
 
 
+    check("换视频提前喊「前方高能」（模型没接上就用笔记兜底）", test_new_video_hype)
+    check("换视频时模型说重复了 → 改用笔记里的预告（不冒「哈哈」）", test_spotlight_repeat_note)
     check("抱抱本地兜底台词（给诉苦那条路用）", test_hug_local_pool)
     check("他在干嘛：游戏 / 干活 / 看视频（本地免费）", test_activity_classify)
     check("主动夸 / 主动关心（并进主动搭话）", test_content_nudge)

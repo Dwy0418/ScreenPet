@@ -39,6 +39,16 @@ _NOTE_KEY_FIELDS: Dict[str, str] = {
     "槽点": "point",
     "笑点": "point",
     "亮点": "point",
+    # 「高光」是给「提前说一句」用的：看完这一眼就知道哪儿要炸，它才能先喊一嗓子
+    # （见 hype_line 和 worker._spotlight 的兜底）
+    "高光": "highlight",
+    "高光点": "highlight",
+    "名场面": "highlight",
+    "爆点": "highlight",
+    "精彩": "highlight",
+    "预告": "highlight",
+    "前方高能": "highlight",
+    "高能": "highlight",
     "人物": "who",
     "主角": "who",
     "角色": "who",
@@ -86,7 +96,7 @@ def _clip(text: str, limit: int) -> str:
 _PROMPT_FRAGMENTS = ("才写", "一律写", "写「未知」", "写「其他」", "看不清", "别猜", "每一项都短")
 #: 这道闸只管**新增的那三个字段**：它们提示词里带着"才写 / 写「未知」"这类说明，
 #: 模型最容易连着抄；老字段（内容 / 看点…）里出现"看不清"是正常说话，别误杀。
-PROMPT_FRAGMENT_FIELDS = ("playstyle", "art", "audience")
+PROMPT_FRAGMENT_FIELDS = ("playstyle", "art", "audience", "highlight")
 
 
 def _is_content(value: str, field: str = "") -> bool:
@@ -142,12 +152,13 @@ class WatchNote:
     audience: str = ""                                       # 玩家群体：硬核老玩家 / 学生党 / 休闲向…
     keywords: List[str] = field(default_factory=list)
     actions: Dict[str, bool] = field(default_factory=dict)   # 点赞/收藏/关注/评论（画面按钮状态）
+    highlight: str = ""    # 高光：这一支接下来最值得等的那一下（读出来就能提前喊一句）
     raw: str = ""          # 模型原样输出（解析不出键值时兜底用）
 
     def is_empty(self) -> bool:
         return not (
             self.title or self.what or self.point or self.who or self.where
-            or self.playstyle or self.art or self.audience or self.keywords
+            or self.playstyle or self.art or self.audience or self.highlight or self.keywords
         )
 
     @property
@@ -167,6 +178,8 @@ class WatchNote:
             parts.append(f"玩法={self.playstyle}")
         if self.point:
             parts.append(f"看点={self.point}")
+        if self.highlight:
+            parts.append(f"高光={self.highlight}")
         return _clip("｜".join(parts), limit)
 
     def block(self) -> str:
@@ -180,6 +193,7 @@ class WatchNote:
             ("画风", self.art),
             ("玩家群体", self.audience),
             ("看点", self.point),
+            ("高光", self.highlight),
             ("人物", self.who),
             ("地点", self.where),
         ):
@@ -242,6 +256,7 @@ def parse_note(text: str, at: Optional[float] = None) -> WatchNote:
     note.playstyle = fields.get("playstyle", "")
     note.art = fields.get("art", "")
     note.audience = fields.get("audience", "")
+    note.highlight = fields.get("highlight", "")
     if not note.genre:   # 模型没给类型：本地按标题/内容/关键词猜一个，保证统计口径不断
         note.genre = taste_mod.normalize_genre(
             " ".join([note.title, note.what, note.point] + list(note.keywords))
@@ -436,6 +451,39 @@ class WatchLog:
             "timeline": len(self.timeline),
             "history": len(self.history),
         }
+
+
+# ---------- 换视频那一句「兜底预告」（本地拼，不花接口钱）----------
+#
+# 为什么要有它：换视频是**唯一**必须开腔的场合（用户要的就是「视频一出来它就有反应」），
+# 可模型那一轮经常交解说词 / 抄提示词，被闸门丢光之后 worker 就只能打一行
+# `[spotlight] new_video：这次没接上话`——屏幕上就是换了一支视频它却一声不吭。
+# 所以这里留一条**纯本地**的路：拿刚读完的笔记拼一句短的顶上去，
+# 有高光就先喊「前方高能」，没有高光就退到看点 / 内容 / 主题。
+#
+# 只拼一句、只用笔记里已经有的字，不猜、不编、不调模型。
+#: 兜底预告的开头词。**「前方高能」占一半**——用户点名要的就是这一句，
+#: 另外两条只是不想每次一模一样（同一支视频重读时换个说法）。
+_HYPE_HEAD = ("前方高能", "前方高能", "注意，要来了", "看好了")
+
+
+def hype_line(note: Optional[WatchNote], pick: int = 0) -> str:
+    """从笔记里拼一句能直接说的预告（拼不出来给空串，别硬凑）。
+
+    `pick` 只是用来换开头词的（同一支视频再来一次时换个说法），调用方随便给个数。
+    """
+    if note is None or note.is_empty():
+        return ""
+    head = _HYPE_HEAD[int(pick) % len(_HYPE_HEAD)]
+    if note.highlight:
+        return _clip(f"{head}：{note.highlight}", 60)
+    if note.point:
+        return _clip(f"{head}：{note.point}", 60)
+    if note.what:
+        return _clip(f"{head}：{note.what}", 60)
+    if note.title:
+        return _clip(f"新的这一支：{note.title}", 60)
+    return ""
 
 
 def format_log(note: Optional[WatchNote], log: Optional[WatchLog] = None) -> str:
